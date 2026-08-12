@@ -25,16 +25,17 @@ jobs:
       - name: Build Web App
         run: npm run build
 
+      - name: Force Install Capacitor CLI
+        run: npm install -g @capacitor/cli
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
       - name: Setup Java (Required for Android)
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
-
-      - name: Sync Capacitor Android
-        run: |
-          npx cap add android || true
-          npx cap sync android
 
       - name: Compile Android APK
         working-directory: ./android
