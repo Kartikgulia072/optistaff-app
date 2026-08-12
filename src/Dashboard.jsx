@@ -1,0 +1,698 @@
+import { useState, useEffect, useRef } from 'react';
+import { supabase } from './supabaseClient';
+
+
+import Sidebar from './components/Sidebar';
+import AdminOverview from './components/AdminOverview';
+import ResourceTable from './components/ResourceTable';
+import CreateResource from './components/CreateResource';
+import AddInfrastructure from './components/AddInfrastructure';
+import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu } from 'lucide-react';
+
+export default function Dashboard({ role = 'admin', supervisorData = null, onLogout }) {
+  const [activeTab, setActiveTab] = useState(role === 'admin' ? 'dashboard' : 'existing');
+  const [isSidebarMobileOpen, setIsSidebarMobileOpen] = useState(false);
+  const [companies, setCompanies] = useState([]);
+  const [supervisors, setSupervisors] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [workspaceId, setWorkspaceId] = useState(null);
+  const [adminProfile, setAdminProfile] = useState({ name: '', photo: null });
+
+  // Modals & Menus State
+  const [viewingWorker, setViewingWorker] = useState(null);
+  const [securePhotos, setSecurePhotos] = useState({ profile: null, id: null });
+  const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
+  const [showCredentialsModal, setShowCredentialsModal] = useState(false);
+  const [targetSupervisor, setTargetSupervisor] = useState(null);
+  const [credentials, setCredentials] = useState({ password: '' });
+  const [manageTab, setManageTab] = useState('credentials');
+  const [newDept, setNewDept] = useState('');
+
+  // New Infrastructure State
+  const [newCompany, setNewCompany] = useState({ name: '', code: '' });
+  const [newPlant, setNewPlant] = useState({ name: '', location: '', companyId: '' });
+
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showSubModal, setShowSubModal] = useState(false);
+
+  const [passwordForm, setPasswordForm] = useState({ newPassword: '', confirm: '' });
+  const [profileForm, setProfileForm] = useState({ name: '', file: null });
+  const [loading, setLoading] = useState(false);
+
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setIsProfileMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => { setupWorkspaceAndFetchData(); }, []);
+
+  const setupWorkspaceAndFetchData = async () => {
+    try {
+      if (role === 'supervisor' && supervisorData) {
+        setWorkspaceId(supervisorData.workspace_id);
+        const { data: plantData } = await supabase.from('plants').select('*, companies(*)').eq('id', supervisorData.plant_id).single();
+        if (plantData && plantData.companies) setCompanies([{ ...plantData.companies, plants: [plantData] }]);
+        const { data: empData } = await supabase.from('employees').select('*').eq('plant_id', supervisorData.plant_id);
+        if (empData) setEmployees(empData);
+        return;
+      }
+
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) { console.error("Session Error:", sessionError.message); return; }
+      if (!session?.user) return;
+      
+      const user = session.user;
+
+      let { data: workspace } = await supabase.from('workspaces').select('*').eq('id', user.id).single();
+      
+      // Auto-heal missing or hidden workspace using UPSERT
+      if (!workspace) {
+        const { data: newWs, error: newWsError } = await supabase.from('workspaces').upsert([{ 
+          id: user.id, 
+          name: 'Main Workspace', 
+          admin_name: 'Workspace Admin' 
+        }], { onConflict: 'id' }).select().single();
+        
+        if (newWsError) {
+          alert("Workspace Auto-Heal Blocked: " + newWsError.message);
+          return; 
+        }
+        workspace = newWs;
+      }
+
+      setWorkspaceId(workspace.id);
+      setAdminProfile({ name: workspace.admin_name || 'Admin', photo: workspace.admin_profile_photo_url || null });
+
+      const { data: companiesData } = await supabase.from('companies').select('*, plants(*)').eq('workspace_id', workspace.id).order('created_at', { ascending: false });
+      if (companiesData) setCompanies(companiesData);
+
+      const { data: supData } = await supabase.from('supervisors').select('*').eq('workspace_id', workspace.id);
+      if (supData) setSupervisors(supData);
+
+      const { data: empData } = await supabase.from('employees').select('*').eq('workspace_id', workspace.id);
+      if (empData) setEmployees(empData);
+
+    } catch (err) { 
+      console.error('Setup error:', err); 
+    }
+  };
+
+  const uploadImage = async (file, prefix) => {
+    if (!file) return null;
+    const fileExt = file.name.split('.').pop();
+    const filePath = `${workspaceId}/${prefix}_${Date.now()}.${fileExt}`;
+    const { error } = await supabase.storage.from('worker_docs').upload(filePath, file);
+    return error ? null : filePath;
+  };
+
+  const handleAddWorker = async (formData, profileFile, aadharFile) => {
+    let companyId = role === 'supervisor' ? supervisorData.company_id : formData.companyId;
+    let plantId = role === 'supervisor' ? supervisorData.plant_id : formData.plantId;
+    const company = companies.find(c => c.id === companyId);
+    const plant = company?.plants?.find(p => p.id === plantId);
+    
+    if (!company || !plant) { alert("Error: Please select a valid company and plant."); return; }
+
+    const profileUrl = await uploadImage(profileFile, `${plant.plant_code}_profile`);
+    const aadharUrl = await uploadImage(aadharFile, `${plant.plant_code}_aadhar`);
+
+    const workerPayload = {
+      workspace_id: workspaceId, company_id: company.id, plant_id: plant.id,
+      name: formData.name, father_name: formData.fatherName, phone: formData.mobile,
+      dob: formData.dob, gender: formData.gender, department: formData.department,
+      post: formData.designation, joining_date: formData.joiningDate, experience: formData.experience,
+      previous_company: formData.previousCompany, monthly_salary: parseFloat(formData.salary),
+      id_proof_type: formData.idProofType, aadhar_number: formData.aadhar,
+      profile_photo_url: profileUrl, aadhar_photo_url: aadharUrl, is_active: true
+    };
+
+    if (formData.employmentType === 'Contractual') {
+      workerPayload.safety_training = formData.safetyTraining;
+      workerPayload.operator_trial = formData.operatorTrial;
+      workerPayload.ppe_issued = formData.ppeIssued;
+    }
+
+    if (role === 'admin') {
+      const pCode = plant.plant_code;
+      const relevantWorkers = formData.employmentType === 'Permanent' ? supervisors : employees;
+      const allCodes = relevantWorkers.filter(w => w.plant_id === plant.id).map(w => w.supervisor_code || w.employee_code).filter(Boolean);
+      let maxSeq = 0;
+      allCodes.forEach(code => {
+        const num = parseInt(code.replace(pCode, '').replace('C', ''), 10);
+        if (!isNaN(num) && num > maxSeq) maxSeq = num;
+      });
+      const generatedId = formData.employmentType === 'Permanent' ? `${pCode}${(maxSeq + 1).toString().padStart(4, '0')}` : `${pCode}C${(maxSeq + 1).toString().padStart(4, '0')}`;
+      
+      workerPayload.approval_status = 'approved';
+      workerPayload.approved_at = new Date().toISOString();
+      workerPayload.added_by = 'Admin';
+      if (formData.employmentType === 'Permanent') workerPayload.supervisor_code = generatedId;
+      else workerPayload.employee_code = generatedId;
+    } else {
+      workerPayload.approval_status = 'pending';
+      workerPayload.added_by = supervisorData.name;
+    }
+
+    const table = formData.employmentType === 'Permanent' ? 'supervisors' : 'employees';
+    const { data, error } = await supabase.from(table).insert([workerPayload]).select();
+    if (error) { alert("Error adding resource: " + error.message); return; }
+    
+    if (formData.employmentType === 'Permanent') setSupervisors([...supervisors, data[0]]);
+    else setEmployees([...employees, data[0]]);
+    
+    alert("Resource successfully created!");
+    setActiveTab(role === 'admin' ? 'existing' : 'pending');
+  };
+
+  const handleApprove = async (workerId, type, plantId) => {
+    const table = type === 'Permanent' ? 'supervisors' : 'employees';
+    const relevantWorkers = type === 'Permanent' ? supervisors : employees;
+    const worker = relevantWorkers.find(w => w.id === workerId);
+    
+    const updatePayload = { approval_status: 'approved', approved_at: new Date().toISOString() };
+
+    // ONLY generate a new ID if the worker doesn't already have one
+    if (!worker.supervisor_code && !worker.employee_code) {
+      const plant = companies.flatMap(c => c.plants).find(p => p.id === plantId);
+      const pCode = plant.plant_code;
+      
+      const allCodes = relevantWorkers.filter(w => w.plant_id === plantId).map(w => w.supervisor_code || w.employee_code).filter(Boolean);
+      let maxSeq = 0;
+      allCodes.forEach(code => {
+        const num = parseInt(code.replace(pCode, '').replace('C', ''), 10);
+        if (!isNaN(num) && num > maxSeq) maxSeq = num;
+      });
+      const generatedId = type === 'Permanent' ? `${pCode}${(maxSeq + 1).toString().padStart(4, '0')}` : `${pCode}C${(maxSeq + 1).toString().padStart(4, '0')}`;
+
+      if (type === 'Permanent') updatePayload.supervisor_code = generatedId;
+      else updatePayload.employee_code = generatedId;
+    }
+
+    const { data, error } = await supabase.from(table).update(updatePayload).eq('id', workerId).select();
+    if (error) { alert(error.message); return; }
+
+    if (type === 'Permanent') setSupervisors(supervisors.map(s => s.id === workerId ? data[0] : s));
+    else setEmployees(employees.map(e => e.id === workerId ? data[0] : e));
+  };
+
+  const handleToggleStatus = async (workerId, type, newStatus) => {
+    const table = type === 'Permanent' ? 'supervisors' : 'employees';
+    const updatePayload = { is_active: newStatus };
+
+    // If a Supervisor is doing this, route it to the Pending queue
+    if (role === 'supervisor') {
+      updatePayload.approval_status = 'pending';
+    }
+
+    const { data } = await supabase.from(table).update(updatePayload).eq('id', workerId).select();
+    if (data) {
+      if (type === 'Permanent') setSupervisors(supervisors.map(s => s.id === workerId ? data[0] : s));
+      else setEmployees(employees.map(e => e.id === workerId ? data[0] : e));
+
+      if (role === 'supervisor') {
+        alert(`Request to ${newStatus ? 'reactivate' : 'relieve'} this worker has been sent to the Admin for approval.`);
+      }
+    }
+  };
+
+  const handleHardDelete = async (workerId, type) => {
+    if (!window.confirm("WARNING: This will permanently delete this record from the database. Continue?")) return;
+    const table = type === 'Permanent' ? 'supervisors' : 'employees';
+    const { error } = await supabase.from(table).delete().eq('id', workerId);
+    if (error) { alert("Delete failed: " + error.message); return; }
+    
+    if (type === 'Permanent') setSupervisors(supervisors.filter(s => s.id !== workerId));
+    else setEmployees(employees.filter(e => e.id !== workerId));
+  };
+
+  const handleAddCompany = async (e) => {
+    e.preventDefault(); setLoading(true);
+    const { data, error } = await supabase.from('companies').insert([{ 
+      workspace_id: workspaceId, company_name: newCompany.name, company_code: newCompany.code 
+    }]).select('*, plants(*)');
+    
+    if (error) alert('Error saving company: ' + error.message);
+    else if (data) { 
+      setCompanies([data[0], ...companies]); 
+      setNewCompany({ name: '', code: '' }); 
+      alert("Company successfully added!");
+    }
+    setLoading(false);
+  };
+
+  const handleAddPlant = async (e) => {
+    e.preventDefault(); setLoading(true);
+    const company = companies.find(c => c.id === newPlant.companyId);
+    if (!company) { setLoading(false); alert("Invalid company selected."); return; }
+    
+    const nextPlantNumber = (company.plants?.length || 0) + 1;
+    const generatedPlantCode = `${company.company_code}${nextPlantNumber}`;
+    
+    const { data, error } = await supabase.from('plants').insert([{ 
+      workspace_id: workspaceId, company_id: company.id, plant_name: newPlant.name, 
+      location: newPlant.location, plant_code: generatedPlantCode 
+    }]).select();
+    
+    if (error) alert('Error saving plant: ' + error.message);
+    else if (data) {
+      const updatedCompanies = companies.map(c => c.id === company.id ? { ...c, plants: [...(c.plants || []), data[0]] } : c);
+      setCompanies(updatedCompanies); 
+      setNewPlant({ name: '', location: '', companyId: '' });
+      alert("Plant unit successfully added!");
+    }
+    setLoading(false);
+  };
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault(); setLoading(true);
+    try {
+      let photoUrl = role === 'admin' ? adminProfile.photo : supervisorData.profile_photo_url;
+      if (profileForm.file) {
+        const newPhotoPath = await uploadImage(profileForm.file, `avatar`);
+        if (newPhotoPath) photoUrl = newPhotoPath;
+      }
+      if (role === 'admin') {
+        const { data, error } = await supabase.from('workspaces').update({ admin_name: profileForm.name, admin_profile_photo_url: photoUrl }).eq('id', workspaceId).select();
+        if (error) throw error;
+        if (data && data.length > 0) setAdminProfile({ name: data[0].admin_name, photo: data[0].admin_profile_photo_url });
+        alert("Profile updated successfully!");
+      } else {
+        const { error } = await supabase.from('supervisors').update({ name: profileForm.name, profile_photo_url: photoUrl }).eq('id', supervisorData.id);
+        if (error) throw error;
+        alert("Profile updated! Please log out and back in to see changes.");
+      }
+      setShowProfileModal(false);
+    } catch (err) { alert("Error updating profile: " + err.message); } finally { setLoading(false); }
+  };
+
+  const handleUpdatePassword = async (e) => {
+    e.preventDefault();
+    if (passwordForm.newPassword !== passwordForm.confirm) { alert("Passwords do not match!"); return; }
+    setLoading(true);
+    if (role === 'admin') {
+      const { error } = await supabase.auth.updateUser({ password: passwordForm.newPassword });
+      if (error) alert("Error updating password: " + error.message);
+      else { alert("Password updated successfully!"); setShowPasswordModal(false); }
+    } else {
+      const { error } = await supabase.from('supervisors').update({ password: passwordForm.newPassword }).eq('id', supervisorData.id);
+      if (error) alert("Error updating password: " + error.message);
+      else { alert("Password updated successfully!"); setShowPasswordModal(false); }
+    }
+    setPasswordForm({ newPassword: '', confirm: '' }); setLoading(false);
+  };
+
+  const handleLogoutClick = async () => {
+    try {
+      if (role === 'admin') {
+        await supabase.auth.signOut();
+      } else {
+        localStorage.removeItem('optistaff_supervisor');
+      }
+      if (onLogout) onLogout();
+      window.location.href = '/'; 
+    } catch (err) {
+      console.error("Logout Error:", err);
+    }
+  };
+
+  const handleViewProfile = async (worker, type) => {
+    setViewingWorker({ ...worker, type });
+    setIsLoadingPhotos(true);
+    setSecurePhotos({ profile: null, id: null });
+
+    try {
+      let pUrl = null;
+      let iUrl = null;
+
+      if (worker.profile_photo_url) {
+        const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.profile_photo_url, 3600);
+        pUrl = data?.signedUrl;
+      }
+      
+      if (worker.aadhar_photo_url) {
+        const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.aadhar_photo_url, 3600);
+        iUrl = data?.signedUrl;
+      }
+
+      setSecurePhotos({ 
+        profile: pUrl || 'not_found', 
+        id: iUrl || 'not_found' 
+      });
+    } catch (error) {
+      console.error("Image fetch error:", error);
+      setSecurePhotos({ profile: 'not_found', id: 'not_found' });
+    } finally {
+      setIsLoadingPhotos(false);
+    }
+  };
+
+  const handleSaveCredentials = async (e) => {
+    e.preventDefault(); setLoading(true);
+    const { data, error } = await supabase.from('supervisors').update({ username: targetSupervisor.supervisor_code.toLowerCase(), password: credentials.password }).eq('id', targetSupervisor.id).select();
+    if (!error && data) {
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
+      setShowCredentialsModal(false); setTargetSupervisor(null); setCredentials({ password: '' });
+    }
+    setLoading(false);
+  };
+
+  const handleAddDepartment = async (e) => {
+    e.preventDefault();
+    if (!newDept.trim()) return;
+    const updatedDepts = [...(targetSupervisor.allowed_departments || []), newDept.trim()];
+    const { data } = await supabase.from('supervisors').update({ allowed_departments: updatedDepts }).eq('id', targetSupervisor.id).select();
+    if (data) {
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
+      setTargetSupervisor(data[0]); setNewDept('');
+    }
+  };
+
+  const handleRemoveDepartment = async (deptToRemove) => {
+    const updatedDepts = targetSupervisor.allowed_departments.filter(d => d !== deptToRemove);
+    const { data } = await supabase.from('supervisors').update({ allowed_departments: updatedDepts }).eq('id', targetSupervisor.id).select();
+    if (data) {
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
+      setTargetSupervisor(data[0]);
+    }
+  };
+
+  const headerDetails = {
+    dashboard: { title: 'Dashboard', sub: 'Network-wide overview' },
+    existing: { title: 'Existing', sub: 'Permanent and contractual roster' },
+    pending: { title: 'Pending approvals', sub: 'Verify documents before activation' },
+    relieved: { title: 'Relieved', sub: 'Deactivated workers, ready to reactivate' },
+    create: { title: 'Create resource', sub: 'Onboard a new worker' },
+    infrastructure: { title: 'Add Company/Plant', sub: 'Configure network facilities' },
+    manage: { title: 'Manage access', sub: 'Generate and configure supervisor logic' }
+  };
+  const currentHeader = headerDetails[activeTab] || headerDetails.dashboard;
+  const userName = role === 'admin' ? adminProfile.name : supervisorData?.name;
+  const userInitials = userName ? userName.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : 'OS';
+  const displayPhoto = role === 'admin' ? adminProfile.photo : supervisorData?.profile_photo_url;
+
+return (
+    <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
+      
+      {/* Updated Sidebar with mobile props */}
+      <Sidebar role={role} activeTab={activeTab} setActiveTab={setActiveTab} isMobileOpen={isSidebarMobileOpen} setIsMobileOpen={setIsSidebarMobileOpen} />
+      
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative w-full">
+        {/* Adjusted padding for mobile: px-5 py-4 */}
+        <div className="px-5 md:px-10 py-4 md:py-6 flex justify-between items-center border-b border-slate-200 bg-white shrink-0 shadow-sm z-10">
+          
+          <div className="flex items-center gap-4">
+            {/* Hamburger Button for Mobile */}
+            <button onClick={() => setIsSidebarMobileOpen(true)} className="md:hidden p-2 bg-slate-50 border border-slate-200 text-slate-600 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">
+              <Menu size={20} />
+            </button>
+            
+            <div>
+              <h1 className="text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight">{currentHeader.title}</h1>
+              <p className="text-slate-500 text-xs md:text-sm mt-0.5 font-medium hidden sm:block">{currentHeader.sub}</p>
+            </div>
+          </div>
+          
+          <div className="relative" ref={menuRef}>
+            <div onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-2 md:gap-3 cursor-pointer hover:bg-slate-50 p-1.5 md:p-2 rounded-xl border border-transparent hover:border-slate-200 transition-all">
+              <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center justify-center font-bold text-xs md:text-sm overflow-hidden shadow-sm shrink-0">
+                {displayPhoto ? <img src={displayPhoto} alt="Profile" className="w-full h-full object-cover" /> : userInitials}
+              </div>
+              <span className="text-slate-700 font-bold text-sm hidden md:block">{userName}</span>
+            </div>
+
+            {/* Profile Dropdown remains exactly the same... */}
+            {isProfileMenuOpen && (
+              <div className="absolute right-0 mt-3 w-64 bg-white border border-slate-200 rounded-xl shadow-2xl shadow-slate-200/50 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
+                <div className="px-5 py-4 border-b border-slate-100 bg-slate-50">
+                  <p className="text-sm font-extrabold text-slate-900 truncate">{userName}</p>
+                  <p className="text-xs text-slate-500 mt-1 font-medium">{role === 'admin' ? 'Workspace Admin' : 'Plant Supervisor'}</p>
+                </div>
+                <div className="py-2">
+                  <button onClick={() => { setProfileForm({ name: userName, file: null }); setShowProfileModal(true); setIsProfileMenuOpen(false); }} className="w-full text-left px-5 py-3 text-sm text-slate-600 hover:bg-slate-50 hover:text-blue-600 font-semibold flex items-center gap-3 transition-colors"><User size={16} /> Edit Profile</button>
+                  <button onClick={() => { setShowPasswordModal(true); setIsProfileMenuOpen(false); }} className="w-full text-left px-5 py-3 text-sm text-slate-600 hover:bg-slate-50 hover:text-blue-600 font-semibold flex items-center gap-3 transition-colors"><Shield size={16} /> Update Password</button>
+                  {role === 'admin' && <button onClick={() => { setShowSubModal(true); setIsProfileMenuOpen(false); }} className="w-full text-left px-5 py-3 text-sm text-slate-600 hover:bg-slate-50 hover:text-blue-600 font-semibold flex items-center gap-3 transition-colors"><CreditCard size={16} /> Subscription details</button>}
+                </div>
+                <div className="border-t border-slate-100 py-2">
+                  <button onClick={handleLogoutClick} className="w-full text-left px-5 py-3 text-sm text-red-600 hover:bg-red-50 font-bold flex items-center gap-3 transition-colors"><LogOut size={16} /> Log out</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Adjusted padding for mobile: p-4 */}
+        <div className="p-4 md:p-10 overflow-y-auto flex-1 relative bg-slate-50">
+          {activeTab === 'dashboard' && role === 'admin' && <AdminOverview companies={companies} supervisors={supervisors} employees={employees} />}
+
+          {['existing', 'relieved', 'pending'].includes(activeTab) && (
+            <ResourceTable activeTab={activeTab} role={role} companies={companies} supervisors={supervisors} employees={employees} onToggleStatus={handleToggleStatus} onApprove={handleApprove} onViewProfile={handleViewProfile} onHardDelete={handleHardDelete} />
+          )}
+
+          {activeTab === 'create' && <CreateResource role={role} companies={companies} supervisorData={supervisorData} onAddWorker={handleAddWorker} />}
+
+          {activeTab === 'infrastructure' && role === 'admin' && (
+            <AddInfrastructure 
+              companies={companies}
+              newCompany={newCompany} setNewCompany={setNewCompany} handleAddCompany={handleAddCompany}
+              newPlant={newPlant} setNewPlant={setNewPlant} handleAddPlant={handleAddPlant}
+              loading={loading}
+            />
+          )}
+
+          {activeTab === 'manage' && role === 'admin' && (
+            <div className="max-w-4xl space-y-4 animate-in fade-in duration-300">
+              {supervisors.filter(s => s.is_active && s.approval_status === 'approved').map(sup => {
+                const plant = companies.flatMap(c => c.plants || []).find(p => p.id === sup.plant_id);
+                return (
+                  <div key={sup.id} className="bg-white border border-slate-200 shadow-sm p-4 md:p-6 rounded-2xl flex flex-col md:flex-row justify-between md:items-center gap-4 hover:border-blue-300 transition-all">
+                    <div>
+                      <h4 className="text-slate-900 font-extrabold text-lg flex items-center gap-3">
+                        {sup.name} 
+                        <span className="text-xs font-mono font-bold px-2 py-1 rounded bg-slate-100 text-slate-600 border border-slate-200">{sup.supervisor_code}</span>
+                      </h4>
+                      <p className="text-slate-500 font-medium text-sm mt-1.5">{plant?.plant_name} · {sup.allowed_departments?.length || 0} Departments Assigned</p>
+                    </div>
+                    <button onClick={() => { setTargetSupervisor(sup); setManageTab('credentials'); setShowCredentialsModal(true); }} className="w-full md:w-auto flex items-center justify-center gap-2 bg-slate-50 border border-slate-200 hover:bg-white hover:border-blue-300 text-blue-700 px-5 py-2.5 rounded-xl text-sm font-bold transition-colors shadow-sm">
+                      <Key size={16} /> Configure Logic
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* MODALS */}
+        {showProfileModal && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 className="text-lg font-extrabold text-slate-900">Edit Profile</h3>
+                <button onClick={() => setShowProfileModal(false)} className="text-slate-400 hover:text-slate-700 bg-white p-1 rounded-md border border-slate-200 shadow-sm"><X size={18} /></button>
+              </div>
+              <form onSubmit={handleUpdateProfile} className="p-6 space-y-6">
+                <div>
+                  <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Display Name</label>
+                  <input type="text" required value={profileForm.name} onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })} className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 text-sm shadow-sm" />
+                </div>
+                <div>
+                  <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Profile Avatar</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+                      {profileForm.file ? <img src={URL.createObjectURL(profileForm.file)} className="w-full h-full object-cover"/> : <Camera size={20} className="text-slate-400" />}
+                    </div>
+                    <input type="file" accept="image/*" onChange={(e) => setProfileForm({ ...profileForm, file: e.target.files[0] })} className="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+                  </div>
+                </div>
+                <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold text-sm mt-2 transition-colors shadow-md shadow-blue-600/20">
+                  {loading ? 'Saving...' : 'Save Changes'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showPasswordModal && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 className="text-lg font-extrabold text-slate-900">Set a new password</h3>
+                <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-slate-700 bg-white p-1 rounded-md border border-slate-200 shadow-sm"><X size={18} /></button>
+              </div>
+              <form onSubmit={handleUpdatePassword} className="p-6 space-y-5">
+                <div>
+                  <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">New Password</label>
+                  <input type="password" required value={passwordForm.newPassword} onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })} className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 text-sm shadow-sm" />
+                </div>
+                <div>
+                  <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Confirm new password</label>
+                  <input type="password" required value={passwordForm.confirm} onChange={(e) => setPasswordForm({ ...passwordForm, confirm: e.target.value })} className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 text-sm shadow-sm" />
+                </div>
+                <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold text-sm mt-4 transition-colors shadow-md shadow-blue-600/20">
+                  {loading ? 'Updating...' : 'Update password'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showSubModal && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl p-8 text-center animate-in zoom-in-95 duration-200">
+              <CreditCard size={48} className="mx-auto text-blue-600 mb-5" />
+              <h3 className="text-xl font-extrabold text-slate-900 mb-2">Free Tier (Beta)</h3>
+              <p className="text-sm font-medium text-slate-500 mb-8 leading-relaxed">Your workspace is currently running on the free development tier. Billing details will be available upon launch.</p>
+              <button onClick={() => setShowSubModal(false)} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold text-sm transition-colors border border-slate-200 shadow-sm">Close</button>
+            </div>
+          </div>
+        )}
+
+        {showCredentialsModal && targetSupervisor && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center z-[60] p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+              <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <h3 className="text-lg font-extrabold text-slate-900">Configure Supervisor</h3>
+                <button onClick={() => { setShowCredentialsModal(false); setTargetSupervisor(null); }} className="text-slate-400 hover:text-slate-700 bg-white p-1 rounded-md border border-slate-200 shadow-sm"><X size={18} /></button>
+              </div>
+              <div className="flex border-b border-slate-200 bg-slate-50 px-2 pt-2">
+                <button onClick={() => setManageTab('credentials')} className={`flex-1 py-3 text-sm font-bold transition-all rounded-t-xl ${manageTab === 'credentials' ? 'bg-white text-blue-600 border-t border-l border-r border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Logins</button>
+                <button onClick={() => setManageTab('departments')} className={`flex-1 py-3 text-sm font-bold transition-all rounded-t-xl ${manageTab === 'departments' ? 'bg-white text-blue-600 border-t border-l border-r border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Departments</button>
+              </div>
+
+              {manageTab === 'credentials' && (
+                <form onSubmit={handleSaveCredentials} className="p-6 space-y-6">
+                  <p className="text-sm font-medium text-slate-500 bg-slate-50 border border-slate-200 p-3 rounded-lg">Provide these credentials securely to the supervisor to access the portal.</p>
+                  <div>
+                    <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Supervisor Username (Auto-Mapped to ID)</label>
+                    <input type="text" disabled value={targetSupervisor.supervisor_code} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-500 focus:outline-none text-sm font-mono font-bold shadow-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Temporary Password</label>
+                    <input type="text" required value={credentials.password} onChange={(e) => setCredentials({ ...credentials, password: e.target.value })} className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 text-sm shadow-sm" placeholder="Enter temp password" />
+                  </div>
+                  <div className="pt-2 flex gap-3">
+                    <button type="button" onClick={() => setShowCredentialsModal(false)} className="flex-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 py-3 rounded-xl text-sm font-bold transition-colors shadow-sm">Cancel</button>
+                    <button type="submit" disabled={loading} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl text-sm font-bold transition-colors shadow-md shadow-blue-600/20">{loading ? 'Saving...' : 'Save Keys'}</button>
+                  </div>
+                </form>
+              )}
+
+              {manageTab === 'departments' && (
+                <div className="p-6">
+                  <p className="text-sm font-medium text-slate-500 mb-5">Define which departments this supervisor is allowed to add workers into.</p>
+                  <form onSubmit={handleAddDepartment} className="flex gap-3 mb-6">
+                    <input type="text" value={newDept} onChange={(e) => setNewDept(e.target.value)} placeholder="e.g. Paint Shop" className="flex-1 bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-slate-900 focus:outline-none focus:border-blue-600 text-sm shadow-sm" />
+                    <button type="submit" className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold transition-colors shadow-md shadow-slate-800/20">Add</button>
+                  </form>
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {targetSupervisor.allowed_departments?.length > 0 ? targetSupervisor.allowed_departments.map(dept => (
+                      <div key={dept} className="flex justify-between items-center bg-white border border-slate-200 px-4 py-3 rounded-xl shadow-sm">
+                        <span className="text-sm text-slate-800 font-bold">{dept}</span>
+                        <button onClick={() => handleRemoveDepartment(dept)} className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-1.5 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                      </div>
+                    )) : <p className="text-sm font-medium text-slate-400 italic text-center py-4 bg-slate-50 rounded-xl border border-slate-200 border-dashed">No departments assigned yet.</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {viewingWorker && (
+          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/20 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+              <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
+                <div>
+                  <h3 className="text-xl font-extrabold text-slate-900">Resource Profile</h3>
+                  <p className="text-sm font-medium text-slate-500 mt-0.5">Added by: <span className="text-blue-600 font-bold">{viewingWorker.added_by || 'Unknown'}</span></p>
+                </div>
+                <button onClick={() => { setViewingWorker(null); setSecurePhotos({profile:null, id:null}); }} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-lg border border-slate-200 shadow-sm transition-colors"><X size={20} /></button>
+              </div>
+
+              <div className="overflow-y-auto p-8 flex flex-col md:flex-row gap-10">
+                <div className="w-full md:w-1/3 flex flex-col gap-6 shrink-0">
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Profile Photo</p>
+                    <div className="aspect-square rounded-xl overflow-hidden bg-slate-50 border border-slate-100 flex items-center justify-center shadow-inner">
+                      {isLoadingPhotos ? (
+                        <span className="text-slate-400 font-medium text-sm animate-pulse">Loading secure image...</span>
+                      ) : securePhotos.profile && securePhotos.profile !== 'not_found' ? (
+                        <img src={securePhotos.profile} alt="Profile" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-red-400 font-medium text-sm text-center px-4">Image not found.<br/>Upload failed or missing.</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">ID Proof Document</p>
+                    <div className="aspect-video rounded-xl overflow-hidden bg-slate-50 border border-slate-100 flex items-center justify-center shadow-inner">
+                      {isLoadingPhotos ? (
+                        <span className="text-slate-400 font-medium text-sm animate-pulse">Loading secure image...</span>
+                      ) : securePhotos.id && securePhotos.id !== 'not_found' ? (
+                        <img src={securePhotos.id} alt="ID Document" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-red-400 font-medium text-sm text-center px-4">Image not found.<br/>Upload failed or missing.</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-full md:w-2/3">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 mb-8 flex justify-between items-center shadow-sm">
+                    <div>
+                      <h2 className="text-3xl font-black text-slate-900 tracking-tight">{viewingWorker.name}</h2>
+                      <p className="text-blue-600 font-mono font-extrabold text-lg mt-1">{viewingWorker.supervisor_code || viewingWorker.employee_code || 'Unassigned ID'}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className={`px-4 py-1.5 rounded-full text-xs font-extrabold uppercase tracking-wider shadow-sm ${viewingWorker.is_active ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>
+                        {viewingWorker.is_active ? 'Active' : 'Relieved'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-y-6 gap-x-8 text-sm">
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Father's / Husband Name</p><p className="text-slate-800 font-bold text-base">{viewingWorker.father_name || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Mobile Number</p><p className="text-slate-800 font-bold text-base">{viewingWorker.phone || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Date of Birth</p><p className="text-slate-800 font-bold text-base">{viewingWorker.dob || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Gender</p><p className="text-slate-800 font-bold text-base">{viewingWorker.gender || '-'}</p></div>
+                    
+                    <div className="col-span-2 my-2 border-t border-slate-100"></div>
+                    
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Department</p><p className="text-slate-800 font-bold text-base">{viewingWorker.department || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Designation</p><p className="text-slate-800 font-bold text-base">{viewingWorker.post || viewingWorker.designation || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Monthly Salary</p><p className="text-emerald-600 font-extrabold text-base">₹{(viewingWorker.monthly_salary || 0).toLocaleString()}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Joining Date</p><p className="text-slate-800 font-bold text-base">{viewingWorker.joining_date || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Experience</p><p className="text-slate-800 font-bold text-base">{viewingWorker.experience || '-'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Previous Company</p><p className="text-slate-800 font-bold text-base">{viewingWorker.previous_company || '-'}</p></div>
+                    
+                    <div className="col-span-2 my-2 border-t border-slate-100"></div>
+
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">ID Proof Type</p><p className="text-slate-800 font-bold text-base">{viewingWorker.id_proof_type || 'Aadhaar'}</p></div>
+                    <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">ID Number</p><p className="text-slate-800 font-bold text-base">{viewingWorker.aadhar_number || '-'}</p></div>
+                    
+                    {viewingWorker.type === 'Contractual' && (
+                      <>
+                        <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Safety Training</p><p className="text-slate-800 font-bold text-base flex items-center gap-2">{viewingWorker.safety_training ? <span className="text-emerald-500">✅ Done</span> : <span className="text-amber-500">❌ Pending</span>}</p></div>
+                        <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Operator Trial</p><p className="text-slate-800 font-bold text-base flex items-center gap-2">{viewingWorker.operator_trial ? <span className="text-emerald-500">✅ Done</span> : <span className="text-amber-500">❌ Pending</span>}</p></div>
+                        <div className="col-span-2"><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">PPE Issued</p><p className="text-slate-800 font-bold text-base">{viewingWorker.ppe_issued || 'None'}</p></div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
