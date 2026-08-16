@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
-
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 import Sidebar from './components/Sidebar';
 import AdminOverview from './components/AdminOverview';
@@ -10,7 +10,8 @@ import AddInfrastructure from './components/AddInfrastructure';
 import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu } from 'lucide-react';
 
 export default function Dashboard({ role = 'admin', supervisorData = null, onLogout }) {
-  const [activeTab, setActiveTab] = useState(role === 'admin' ? 'dashboard' : 'existing');
+  // Supervisors immediately default to the 'create' tab
+  const [activeTab, setActiveTab] = useState(role === 'admin' ? 'dashboard' : 'create');
   const [isSidebarMobileOpen, setIsSidebarMobileOpen] = useState(false);
   const [companies, setCompanies] = useState([]);
   const [supervisors, setSupervisors] = useState([]);
@@ -117,6 +118,13 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   const handleAddWorker = async (formData, profileFile, aadharFile) => {
     let companyId = role === 'supervisor' ? supervisorData.company_id : formData.companyId;
     let plantId = role === 'supervisor' ? supervisorData.plant_id : formData.plantId;
+    
+    // Support the global selection from supervisor dropdowns
+    if (role === 'supervisor' && formData.companyId && formData.plantId) {
+      companyId = formData.companyId;
+      plantId = formData.plantId;
+    }
+
     const company = companies.find(c => c.id === companyId);
     const plant = company?.plants?.find(p => p.id === plantId);
     
@@ -136,9 +144,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     };
 
     if (formData.employmentType === 'Contractual') {
-      workerPayload.safety_training = formData.safetyTraining;
       workerPayload.operator_trial = formData.operatorTrial;
-      workerPayload.ppe_issued = formData.ppeIssued;
     }
 
     if (role === 'admin') {
@@ -169,8 +175,31 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     if (formData.employmentType === 'Permanent') setSupervisors([...supervisors, data[0]]);
     else setEmployees([...employees, data[0]]);
     
+    // Trigger Native Android Notification for Supervisors
+    if (role === 'supervisor') {
+      try {
+        await LocalNotifications.requestPermissions();
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title: "Resource Submitted",
+              body: "New employee profile has been sent to the contractor for approval.",
+              id: new Date().getTime(),
+              schedule: { at: new Date(Date.now() + 1000) },
+              sound: null,
+              attachments: null,
+              actionTypeId: "",
+              extra: null
+            }
+          ]
+        });
+      } catch (error) {
+        console.error("Notification failed to send:", error);
+      }
+    }
+
     alert("Resource successfully created!");
-    setActiveTab(role === 'admin' ? 'existing' : 'pending');
+    setActiveTab(role === 'admin' ? 'existing' : 'create');
   };
 
   const handleApprove = async (workerId, type, plantId) => {
@@ -180,7 +209,6 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     
     const updatePayload = { approval_status: 'approved', approved_at: new Date().toISOString() };
 
-    // ONLY generate a new ID if the worker doesn't already have one
     if (!worker.supervisor_code && !worker.employee_code) {
       const plant = companies.flatMap(c => c.plants).find(p => p.id === plantId);
       const pCode = plant.plant_code;
@@ -208,7 +236,6 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const table = type === 'Permanent' ? 'supervisors' : 'employees';
     const updatePayload = { is_active: newStatus };
 
-    // If a Supervisor is doing this, route it to the Pending queue
     if (role === 'supervisor') {
       updatePayload.approval_status = 'pending';
     }
@@ -270,6 +297,24 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       alert("Plant unit successfully added!");
     }
     setLoading(false);
+  };
+
+  const updateComplianceData = async () => {
+    const table = viewingWorker.type === 'Permanent' ? 'supervisors' : 'employees';
+    const { error } = await supabase
+      .from(table)
+      .update({ uan_number: viewingWorker.uan_number, esi_number: viewingWorker.esi_number })
+      .eq('id', viewingWorker.id);
+      
+    if (error) alert("Error saving compliance data: " + error.message);
+    else {
+      alert("Compliance data saved successfully!");
+      if (viewingWorker.type === 'Permanent') {
+         setSupervisors(supervisors.map(s => s.id === viewingWorker.id ? {...s, uan_number: viewingWorker.uan_number, esi_number: viewingWorker.esi_number} : s));
+      } else {
+         setEmployees(employees.map(e => e.id === viewingWorker.id ? {...e, uan_number: viewingWorker.uan_number, esi_number: viewingWorker.esi_number} : e));
+      }
+    }
   };
 
   const handleUpdateProfile = async (e) => {
@@ -402,15 +447,12 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
       
-      {/* Updated Sidebar with mobile props */}
       <Sidebar role={role} activeTab={activeTab} setActiveTab={setActiveTab} isMobileOpen={isSidebarMobileOpen} setIsMobileOpen={setIsSidebarMobileOpen} />
       
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative w-full">
-        {/* Adjusted padding for mobile: px-5 py-4 */}
         <div className="px-5 md:px-10 py-4 md:py-6 flex justify-between items-center border-b border-slate-200 bg-white shrink-0 shadow-sm z-10">
           
           <div className="flex items-center gap-4">
-            {/* Hamburger Button for Mobile */}
             <button onClick={() => setIsSidebarMobileOpen(true)} className="md:hidden p-2 bg-slate-50 border border-slate-200 text-slate-600 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">
               <Menu size={20} />
             </button>
@@ -429,7 +471,6 @@ return (
               <span className="text-slate-700 font-bold text-sm hidden md:block">{userName}</span>
             </div>
 
-            {/* Profile Dropdown remains exactly the same... */}
             {isProfileMenuOpen && (
               <div className="absolute right-0 mt-3 w-64 bg-white border border-slate-200 rounded-xl shadow-2xl shadow-slate-200/50 overflow-hidden z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="px-5 py-4 border-b border-slate-100 bg-slate-50">
@@ -449,7 +490,6 @@ return (
           </div>
         </div>
 
-        {/* Adjusted padding for mobile: p-4 */}
         <div className="p-4 md:p-10 overflow-y-auto flex-1 relative bg-slate-50">
           {activeTab === 'dashboard' && role === 'admin' && <AdminOverview companies={companies} supervisors={supervisors} employees={employees} />}
 
@@ -680,12 +720,42 @@ return (
                     <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">ID Number</p><p className="text-slate-800 font-bold text-base">{viewingWorker.aadhar_number || '-'}</p></div>
                     
                     {viewingWorker.type === 'Contractual' && (
-                      <>
-                        <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Safety Training</p><p className="text-slate-800 font-bold text-base flex items-center gap-2">{viewingWorker.safety_training ? <span className="text-emerald-500">✅ Done</span> : <span className="text-amber-500">❌ Pending</span>}</p></div>
-                        <div><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Operator Trial</p><p className="text-slate-800 font-bold text-base flex items-center gap-2">{viewingWorker.operator_trial ? <span className="text-emerald-500">✅ Done</span> : <span className="text-amber-500">❌ Pending</span>}</p></div>
-                        <div className="col-span-2"><p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">PPE Issued</p><p className="text-slate-800 font-bold text-base">{viewingWorker.ppe_issued || 'None'}</p></div>
-                      </>
+                      <div className="col-span-2">
+                        <p className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-1.5">Operator Trial</p>
+                        <p className="text-slate-800 font-bold text-base flex items-center gap-2">{viewingWorker.operator_trial ? <span className="text-emerald-500">✅ Done</span> : <span className="text-amber-500">❌ Pending</span>}</p>
+                      </div>
                     )}
+                    
+                    {/* Compliance Information Block - Added Here */}
+                    <div className="col-span-2 mt-4 bg-blue-50/50 p-5 rounded-xl border border-blue-100">
+                      <h4 className="text-sm font-bold text-slate-800 mb-4 flex justify-between items-center">
+                        Compliance Information
+                        {role === 'admin' && (
+                          <button onClick={updateComplianceData} className="text-xs bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors font-bold">
+                            Save Changes
+                          </button>
+                        )}
+                      </h4>
+                      <div className="grid grid-cols-2 gap-6">
+                        <div>
+                          <label className="text-slate-500 font-bold uppercase tracking-wider text-xs mb-2 block">PF / UAN Number</label>
+                          {role === 'admin' ? (
+                            <input type="text" value={viewingWorker.uan_number || ''} onChange={(e) => setViewingWorker({...viewingWorker, uan_number: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm bg-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="e.g. 100XXXXXXX" />
+                          ) : (
+                            <p className="text-slate-800 font-bold text-base">{viewingWorker.uan_number || 'Pending'}</p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="text-slate-500 font-bold uppercase tracking-wider text-xs mb-2 block">ESI Number</label>
+                          {role === 'admin' ? (
+                            <input type="text" value={viewingWorker.esi_number || ''} onChange={(e) => setViewingWorker({...viewingWorker, esi_number: e.target.value})} className="w-full border border-slate-300 rounded-lg p-2.5 text-sm bg-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500" placeholder="e.g. 11XXXXXXX" />
+                          ) : (
+                            <p className="text-slate-800 font-bold text-base">{viewingWorker.esi_number || 'Pending'}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
                   </div>
                 </div>
               </div>

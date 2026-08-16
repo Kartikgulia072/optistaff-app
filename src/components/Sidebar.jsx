@@ -42,19 +42,22 @@ export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, s
               <LayoutGrid size={18} /> Dashboard
             </div>
           )}
+
+          {role === 'admin' && (
           <div onClick={() => handleNavClick('existing')} className={getNavClass('existing')}>
             <Users size={18} /> Existing
           </div>
-          
+          )}
           {role === 'admin' && (
             <div onClick={() => handleNavClick('pending')} className={getNavClass('pending')}>
               <Clock size={18} /> Pending approvals
             </div>
           )}
-
+          {role === 'admin' && (
           <div onClick={() => handleNavClick('relieved')} className={getNavClass('relieved')}>
             <Archive size={18} /> Relieved
           </div>
+          )}
           <div onClick={() => handleNavClick('create')} className={getNavClass('create')}>
             <UserPlus size={18} /> Create resource
           </div>

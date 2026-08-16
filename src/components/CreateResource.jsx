@@ -7,7 +7,7 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
   const [formData, setFormData] = useState({
     companyId: '', plantId: '', name: '', fatherName: '', mobile: '', aadhar: '', dob: '', gender: 'Male',
     department: '', designation: '', joiningDate: '', experience: '', previousCompany: '', salary: '',
-    idProofType: 'Aadhaar', safetyTraining: false, operatorTrial: false, ppeIssued: ''
+    idProofType: 'Aadhaar', operatorTrial: false
   });
 
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
@@ -44,29 +44,20 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
         
         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-200 pb-2 mb-5">1. Placement</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {role === 'admin' ? (
-            <>
-              <div>
-                <label className={labelClass}>Company *</label>
-                <select required value={formData.companyId} onChange={e => setFormData({...formData, companyId: e.target.value, plantId: ''})} className={inputClass}>
-                  <option value="" disabled>Select...</option>
-                  {companies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={labelClass}>Plant Unit *</label>
-                <select required value={formData.plantId} onChange={e => setFormData({...formData, plantId: e.target.value})} disabled={!formData.companyId} className={inputClass}>
-                  <option value="" disabled>Select...</option>
-                  {availablePlants.map(p => <option key={p.id} value={p.id}>{p.plant_name}</option>)}
-                </select>
-              </div>
-            </>
-          ) : (
-            <div className="col-span-2 bg-slate-50 border border-slate-200 p-4 rounded-xl text-sm text-slate-700">
-              Adding to <strong>{companies[0]?.plants[0]?.plant_name}</strong> roster. 
-              <br/><span className="text-xs text-amber-600 font-bold mt-1 inline-block bg-amber-50 px-2 py-1 rounded">ID will be generated automatically upon Admin approval.</span>
-            </div>
-          )}
+          <div>
+            <label className={labelClass}>Company *</label>
+            <select required value={formData.companyId} onChange={e => setFormData({...formData, companyId: e.target.value, plantId: ''})} className={inputClass}>
+              <option value="" disabled>Select...</option>
+              {companies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Plant Unit *</label>
+            <select required value={formData.plantId} onChange={e => setFormData({...formData, plantId: e.target.value})} disabled={!formData.companyId} className={inputClass}>
+              <option value="" disabled>Select...</option>
+              {availablePlants.map(p => <option key={p.id} value={p.id}>{p.plant_name}</option>)}
+            </select>
+          </div>
         </div>
 
         <h3 className={sectionHeaderClass}>2. Basic Details</h3>
@@ -118,27 +109,22 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
           <div><label className={labelClass}>ID Number *</label><input type="text" required value={formData.aadhar} onChange={e => setFormData({...formData, aadhar: e.target.value})} className={inputClass} /></div>
           
           {empType === 'Contractual' && (
-            <div className="col-span-1 md:col-span-3 grid grid-cols-3 gap-6 mt-2">
-              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-between">
-                <span className="text-sm font-bold text-slate-700">Safety Training Done?</span>
-                <input type="checkbox" checked={formData.safetyTraining} onChange={e => setFormData({...formData, safetyTraining: e.target.checked})} className="w-5 h-5 accent-blue-600 rounded cursor-pointer" />
-              </div>
-              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-between">
+            <div className="col-span-1 md:col-span-3 mt-2">
+              <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-center justify-between w-fit gap-4 pr-8">
                 <span className="text-sm font-bold text-slate-700">Operator Trial Done?</span>
                 <input type="checkbox" checked={formData.operatorTrial} onChange={e => setFormData({...formData, operatorTrial: e.target.checked})} className="w-5 h-5 accent-blue-600 rounded cursor-pointer" />
               </div>
-              <div><label className={labelClass}>PPE Issued (Optional)</label><input type="text" value={formData.ppeIssued} onChange={e => setFormData({...formData, ppeIssued: e.target.value})} placeholder="Helmet, Shoes..." className={inputClass} /></div>
             </div>
           )}
 
           <div className="col-span-1 md:col-span-3 grid grid-cols-2 gap-6 mt-4">
             <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl">
               <label className={labelClass}>Upload ID Image *</label>
-              <input type="file" id="idPhoto" accept="image/*" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+              <input type="file" id="idPhoto" accept="image/*" capture="environment" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
             </div>
             <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl">
               <label className={labelClass}>Upload Profile Photo *</label>
-              <input type="file" id="profilePhoto" accept="image/*" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+              <input type="file" id="profilePhoto" accept="image/*" capture="environment" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
             </div>
           </div>
         </div>
