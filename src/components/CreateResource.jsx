@@ -1,7 +1,7 @@
 import { useState } from 'react';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 
 export default function CreateResource({ role, companies, supervisorData, onAddWorker }) {
-  // Supervisor defaults to Contractual, Admin defaults to Permanent
   const [empType, setEmpType] = useState(role === 'supervisor' ? 'Contractual' : 'Permanent');
   
   const [formData, setFormData] = useState({
@@ -10,14 +10,40 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
     idProofType: 'Aadhaar', operatorTrial: false
   });
 
+  // Store the actual file data from the native camera
+  const [photos, setPhotos] = useState({ profile: null, id: null });
+
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
+
+  // This function triggers the native popup asking "Camera or Gallery?"
+  const handleTakePhoto = async (type) => {
+    try {
+      const image = await Camera.getPhoto({
+        quality: 80,
+        allowEditing: false,
+        resultType: CameraResultType.Uri,
+        source: CameraSource.Prompt, // <-- This is the magic command for the selection menu!
+      });
+
+      // Convert the native phone image into a standard file so your Supabase upload still works perfectly
+      const response = await fetch(image.webPath);
+      const blob = await response.blob();
+      const file = new File([blob], `${type}_photo.${image.format}`, { type: `image/${image.format}` });
+
+      setPhotos(prev => ({ ...prev, [type]: file }));
+    } catch (error) {
+      console.log("User cancelled photo selection or camera failed:", error);
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (role === 'supervisor' && !formData.department) return alert("Please select a department.");
-    const profileFile = document.getElementById('profilePhoto').files[0];
-    const idFile = document.getElementById('idPhoto').files[0];
-    onAddWorker({ ...formData, employmentType: empType }, profileFile, idFile);
+    
+    // Ensure both photos are selected before submitting
+    if (!photos.profile || !photos.id) return alert("Please provide both the ID Document and Profile Photo.");
+    
+    onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.id);
   };
 
   const inputClass = "w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all text-sm shadow-sm";
@@ -27,14 +53,11 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
   return (
     <div className="max-w-4xl pb-10 animate-in fade-in duration-300">
       <div className="flex gap-3 mb-8 bg-slate-200/50 p-1.5 rounded-xl w-fit">
-        
-        {/* Only Admin can see and click Permanent */}
         {role === 'admin' && (
           <button type="button" onClick={() => setEmpType('Permanent')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Permanent' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
             Permanent
           </button>
         )}
-        
         <button type="button" onClick={() => setEmpType('Contractual')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Contractual' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
           Contractual
         </button>
@@ -118,13 +141,25 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
           )}
 
           <div className="col-span-1 md:col-span-3 grid grid-cols-2 gap-6 mt-4">
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl">
+            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
               <label className={labelClass}>Upload ID Image *</label>
-              <input type="file" id="idPhoto" accept="image/*" capture="environment" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+              <button 
+                type="button" 
+                onClick={() => handleTakePhoto('id')}
+                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.id ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
+              >
+                {photos.id ? '✅ ID Saved (Tap to change)' : '📸 Camera or Gallery'}
+              </button>
             </div>
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl">
+            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
               <label className={labelClass}>Upload Profile Photo *</label>
-              <input type="file" id="profilePhoto" accept="image/*" capture="environment" required className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer" />
+              <button 
+                type="button" 
+                onClick={() => handleTakePhoto('profile')}
+                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.profile ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
+              >
+                {photos.profile ? '✅ Profile Saved (Tap to change)' : '📸 Camera or Gallery'}
+              </button>
             </div>
           </div>
         </div>
