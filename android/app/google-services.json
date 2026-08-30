@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "556674776826",
+    "project_id": "optistaff-b15f8",
+    "storage_bucket": "optistaff-b15f8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:556674776826:android:04599522514ad7a6ad5343",
+        "android_client_info": {
+          "package_name": "com.skengineering.optistaff"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCIhmx1jKOZa5P5e1asRbXo1nHOYvmQmS0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
