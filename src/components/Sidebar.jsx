@@ -27,7 +27,7 @@ export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, s
         
         <div className="p-5 md:p-6 flex items-center justify-between border-b border-blue-800 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="bg-white text-blue-900 p-2 rounded-lg font-black text-xs leading-none shadow-md shadow-black/10">OS</div>
+            <img src="/favicon.png" alt="OptiStaff" className="w-9 h-9 rounded-lg shadow-md shadow-black/10" />
             <span className="text-2xl font-extrabold text-white tracking-tight">OptiStaff</span>
           </div>
           {/* Mobile Close Button */}

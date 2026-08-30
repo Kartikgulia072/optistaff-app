@@ -4,14 +4,17 @@ import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 export default function CreateResource({ role, companies, supervisorData, onAddWorker }) {
   const [empType, setEmpType] = useState(role === 'supervisor' ? 'Contractual' : 'Permanent');
   
-  const [formData, setFormData] = useState({
+  const initialFormData = {
     companyId: '', plantId: '', name: '', fatherName: '', mobile: '', aadhar: '', dob: '', gender: 'Male',
     department: '', designation: '', joiningDate: '', experience: '', previousCompany: '', salary: '',
     idProofType: 'Aadhaar', operatorTrial: false
-  });
+  };
+
+  const [formData, setFormData] = useState(initialFormData);
 
   // Store the actual file data from the native camera
   const [photos, setPhotos] = useState({ profile: null, id: null });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
 
@@ -36,14 +39,27 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (role === 'supervisor' && !formData.department) return alert("Please select a department.");
-    
+
     // Ensure both photos are selected before submitting
     if (!photos.profile || !photos.id) return alert("Please provide both the ID Document and Profile Photo.");
-    
-    onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.id);
+
+    setIsSubmitting(true);
+    try {
+      await onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.id);
+      // Clear the form back to a blank state only after the submission succeeded
+      setFormData(initialFormData);
+      setPhotos({ profile: null, id: null });
+      setEmpType(role === 'supervisor' ? 'Contractual' : 'Permanent');
+    } catch (err) {
+      // Dashboard already shows an alert with the specific error; just keep
+      // the form filled in so the user doesn't lose their entered data.
+      console.error('Submission failed:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const inputClass = "w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all text-sm shadow-sm";
@@ -164,8 +180,15 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
           </div>
         </div>
 
-        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all mt-8 text-lg shadow-lg shadow-blue-600/30">
-          {role === 'admin' ? 'Create & Activate Resource' : 'Submit for Admin Approval'}
+        <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all mt-8 text-lg shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2">
+          {isSubmitting ? (
+            <>
+              <span className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              Processing...
+            </>
+          ) : (
+            role === 'admin' ? 'Create & Activate Resource' : 'Submit for Admin Approval'
+          )}
         </button>
       </form>
     </div>

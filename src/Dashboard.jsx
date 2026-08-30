@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { PushNotifications } from '@capacitor/push-notifications';
+import { Capacitor } from '@capacitor/core';
 
 import Sidebar from './components/Sidebar';
 import AdminOverview from './components/AdminOverview';
@@ -70,6 +71,12 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   useEffect(() => {
   if (!workspaceId) return;
   if (role === 'supervisor' && !supervisorData) return;
+  // The push-notifications plugin has no web implementation at all — calling
+  // any of its methods in a browser throws "plugin is not implemented on web"
+  // instead of failing gracefully. Real push only makes sense on the native
+  // Android app anyway, since a browser tab can't receive FCM pushes without
+  // a completely separate Web Push + service worker setup.
+  if (!Capacitor.isNativePlatform()) return;
 
   const registerPush = async () => {
     const permStatus = await PushNotifications.checkPermissions();
@@ -232,7 +239,12 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const fileExt = file.name.split('.').pop();
     const filePath = `${workspaceId}/${prefix}_${Date.now()}.${fileExt}`;
     const { error } = await supabase.storage.from('worker_docs').upload(filePath, file);
-    return error ? null : filePath;
+    if (error) {
+      console.error('Photo upload failed:', error);
+      alert(`Photo upload failed: ${error.message}\n\nThe resource will NOT be saved with this photo. Check the worker_docs storage bucket and its policies in Supabase.`);
+      return null;
+    }
+    return filePath;
   };
 
   const handleAddWorker = async (formData, profileFile, aadharFile) => {
@@ -290,7 +302,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 
     const table = formData.employmentType === 'Permanent' ? 'supervisors' : 'employees';
     const { data, error } = await supabase.from(table).insert([workerPayload]).select();
-    if (error) { alert("Error adding resource: " + error.message); return; }
+    if (error) { alert("Error adding resource: " + error.message); throw error; }
     
     if (formData.employmentType === 'Permanent') setSupervisors([...supervisors, data[0]]);
     else setEmployees([...employees, data[0]]);
@@ -564,6 +576,20 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   const userName = role === 'admin' ? adminProfile.name : supervisorData?.name;
   const userInitials = userName ? userName.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : 'OS';
   const displayPhoto = role === 'admin' ? adminProfile.photo : supervisorData?.profile_photo_url;
+  const [headerPhotoUrl, setHeaderPhotoUrl] = useState(null);
+
+  // displayPhoto is just the raw storage path (e.g. "workspaceId/avatar_123.jpg"),
+  // not a usable URL — worker_docs is a private bucket, so it has to be exchanged
+  // for a temporary signed URL before it can be used as an <img src>.
+  useEffect(() => {
+    if (!displayPhoto) { setHeaderPhotoUrl(null); return; }
+    let cancelled = false;
+    supabase.storage.from('worker_docs').createSignedUrl(displayPhoto, 3600).then(({ data, error }) => {
+      if (error) { console.error('Failed to load profile photo:', error); return; }
+      if (!cancelled) setHeaderPhotoUrl(data?.signedUrl || null);
+    });
+    return () => { cancelled = true; };
+  }, [displayPhoto]);
 
 return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
@@ -587,7 +613,7 @@ return (
           <div className="relative" ref={menuRef}>
             <div onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)} className="flex items-center gap-2 md:gap-3 cursor-pointer hover:bg-slate-50 p-1.5 md:p-2 rounded-xl border border-transparent hover:border-slate-200 transition-all">
               <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center justify-center font-bold text-xs md:text-sm overflow-hidden shadow-sm shrink-0">
-                {displayPhoto ? <img src={displayPhoto} alt="Profile" className="w-full h-full object-cover" /> : userInitials}
+                {headerPhotoUrl ? <img src={headerPhotoUrl} alt="Profile" className="w-full h-full object-cover" /> : userInitials}
               </div>
               <span className="text-slate-700 font-bold text-sm hidden md:block">{userName}</span>
             </div>
