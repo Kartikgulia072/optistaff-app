@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { PushNotifications } from '@capacitor/push-notifications';
 
 import Sidebar from './components/Sidebar';
 import AdminOverview from './components/AdminOverview';
@@ -65,6 +66,43 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       console.error('Notification permission request failed:', err)
     );
   }, []);
+
+  useEffect(() => {
+  if (!workspaceId) return;
+  if (role === 'supervisor' && !supervisorData) return;
+
+  const registerPush = async () => {
+    const permStatus = await PushNotifications.checkPermissions();
+    if (permStatus.receive !== 'granted') {
+      const req = await PushNotifications.requestPermissions();
+      if (req.receive !== 'granted') return;
+    }
+    await PushNotifications.register();
+  };
+
+  const regListener = PushNotifications.addListener('registration', async (token) => {
+    await supabase.from('device_tokens').upsert(
+      {
+        token: token.value,
+        role,
+        workspace_id: workspaceId,
+        plant_id: role === 'supervisor' ? supervisorData.plant_id : null,
+      },
+      { onConflict: 'token' }
+    );
+  });
+
+  const errListener = PushNotifications.addListener('registrationError', (err) => {
+    console.error('Push registration error:', err);
+  });
+
+  registerPush();
+
+  return () => {
+    regListener.remove();
+    errListener.remove();
+  };
+}, [workspaceId, role, supervisorData]);
 
   // Cross-device approval notifications.
   //
