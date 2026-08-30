@@ -38,4 +38,6 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required on Android 13+ (API 33+): without this, notifications never show even if the app requests permission at runtime -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

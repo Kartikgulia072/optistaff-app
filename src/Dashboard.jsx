@@ -56,6 +56,88 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 
   useEffect(() => { setupWorkspaceAndFetchData(); }, []);
 
+  // Ask for notification permission once, as soon as the dashboard loads,
+  // instead of only at the moment a worker is submitted. On Android 13+ this
+  // permission prompt has to be granted or nothing will ever show, no matter
+  // how many times schedule() is called later.
+  useEffect(() => {
+    LocalNotifications.requestPermissions().catch((err) =>
+      console.error('Notification permission request failed:', err)
+    );
+  }, []);
+
+  // Cross-device approval notifications.
+  //
+  // LocalNotifications only fires on the device that calls .schedule() — it
+  // cannot "push" to someone else's phone. Previously the only schedule()
+  // call fired on the *supervisor's own* device right after they submitted a
+  // worker, which just confirms their own action and never reaches the Admin.
+  // Nobody was ever notified that something needed approval, and the
+  // supervisor was never told once the Admin acted on it.
+  //
+  // This subscribes to Supabase Realtime so that whichever role is looking
+  // at this dashboard right now gets a local notification the moment a
+  // relevant row changes in the database:
+  //   - Admin: notified when a supervisor submits a new worker, or requests
+  //     a relieve/reactivation, that needs approval.
+  //   - Supervisor: notified when the Admin approves something they submitted.
+  //
+  // Note: this still requires the app to be open (foreground or background)
+  // to receive the Realtime event — it is not a true push notification that
+  // wakes a fully closed app. That would need a server-side trigger (e.g. a
+  // Supabase Edge Function) pushing through Firebase Cloud Messaging via the
+  // @capacitor/push-notifications plugin.
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (role === 'supervisor' && !supervisorData) return;
+
+    const notify = (title, body) => {
+      LocalNotifications.schedule({
+        notifications: [{
+          title,
+          body,
+          id: Date.now(),
+          schedule: { at: new Date(Date.now() + 500) },
+        }],
+      }).catch((err) => console.error('Notification failed to send:', err));
+    };
+
+    const channel = supabase.channel(`approvals-${workspaceId}-${role}`);
+
+    if (role === 'admin') {
+      const handlePendingChange = (payload) => {
+        const isNewlyPending =
+          payload.new.approval_status === 'pending' &&
+          payload.old?.approval_status !== 'pending';
+        if (payload.eventType === 'INSERT' && payload.new.approval_status === 'pending') {
+          notify('New Approval Request', `${payload.new.name} was submitted by ${payload.new.added_by || 'a supervisor'} for approval.`);
+        } else if (payload.eventType === 'UPDATE' && isNewlyPending) {
+          notify('Approval Requested', `${payload.new.name}'s status change needs your approval.`);
+        }
+      };
+
+      channel
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'employees', filter: `workspace_id=eq.${workspaceId}` }, handlePendingChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'supervisors', filter: `workspace_id=eq.${workspaceId}` }, handlePendingChange);
+    } else {
+      const handleApprovedChange = (payload) => {
+        const justApproved =
+          payload.new.approval_status === 'approved' &&
+          payload.old?.approval_status === 'pending';
+        if (justApproved) {
+          notify('Request Approved', `${payload.new.name} has been approved by the Admin.`);
+        }
+      };
+
+      channel
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employees', filter: `plant_id=eq.${supervisorData.plant_id}` }, handleApprovedChange)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'supervisors', filter: `plant_id=eq.${supervisorData.plant_id}` }, handleApprovedChange);
+    }
+
+    channel.subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [workspaceId, role, supervisorData]);
+
   const setupWorkspaceAndFetchData = async () => {
     try {
       if (role === 'supervisor' && supervisorData) {
@@ -175,10 +257,11 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     if (formData.employmentType === 'Permanent') setSupervisors([...supervisors, data[0]]);
     else setEmployees([...employees, data[0]]);
     
-    // Trigger Native Android Notification for Supervisors
+    // Local confirmation for the supervisor that their own submission went
+    // through. The Admin is notified separately by the Realtime subscription
+    // above, since this device has no way to push to the Admin's phone.
     if (role === 'supervisor') {
       try {
-        await LocalNotifications.requestPermissions();
         await LocalNotifications.schedule({
           notifications: [
             {
