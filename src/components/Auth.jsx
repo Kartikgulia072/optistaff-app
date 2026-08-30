@@ -28,15 +28,21 @@ export default function Auth({ onSupervisorLogin }) {
 
         if (authData.user) {
           const { error: wsError } = await supabase.from('workspaces').insert([
-            { id: authData.user.id, name: 'Main Workspace', admin_name: adminName || 'Workspace Admin' }
+            { id: authData.user.id, name: 'Main Workspace', admin_name: adminName || 'Workspace Admin', admin_email: email }
           ]);
           if (wsError) throw wsError;
         }
         alert("Registration successful! You can now log in.");
         setIsSignUp(false);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data: signInData, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+
+        const { data: ws } = await supabase.from('workspaces').select('is_disabled').eq('id', signInData.user.id).single();
+        if (ws?.is_disabled) {
+          await supabase.auth.signOut();
+          throw new Error("This workspace has been disabled. Contact support for assistance.");
+        }
       }
     } catch (error) {
       setErrorMsg(error.message);
