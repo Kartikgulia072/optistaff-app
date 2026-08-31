@@ -141,7 +141,11 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
         notifications: [{
           title,
           body,
-          id: Date.now(),
+          // Android requires a 32-bit int id (max ~2.1 billion). Date.now()
+          // is a 13-digit millisecond timestamp that overflows this, which
+          // silently failed every notification with error OS-PLUG-LNOT-0009.
+          // Math.random() * 2147483647 always fits.
+          id: Math.floor(Math.random() * 2147483647),
           schedule: { at: new Date(Date.now() + 500) },
         }],
       }).catch((err) => console.error('Notification failed to send:', err));
@@ -317,7 +321,8 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
             {
               title: "Resource Submitted",
               body: "New employee profile has been sent to the contractor for approval.",
-              id: new Date().getTime(),
+              // Same 32-bit id fix as the notify() helper above.
+              id: Math.floor(Math.random() * 2147483647),
               schedule: { at: new Date(Date.now() + 1000) },
               sound: null,
               attachments: null,
