@@ -8,8 +8,8 @@ import './index.css'
 // right) -- tap it to see console logs, network requests, etc. right on the
 // device screen. Remove this import + the eruda.init() call once you're done
 // debugging the notification issue.
-import eruda from 'eruda';
-eruda.init();
+// import eruda from 'eruda';
+// eruda.init();
 
 // 1. Import the Capacitor UI elements
 import { defineCustomElements } from '@ionic/pwa-elements/loader';
