@@ -14,10 +14,10 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
   const [formData, setFormData] = useState(initialFormData);
 
   // Store the actual file data from the native camera
-  const [photos, setPhotos] = useState({ profile: null, idFront: null, idBack: null });
+  const [photos, setPhotos] = useState({ profile: null, idFront: null, idBack: null, passbook: null });
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Used only on the web fallback path below, to trigger a hidden file input.
-  const fileInputRef = useRef({ profile: null, idFront: null, idBack: null });
+  const fileInputRef = useRef({ profile: null, idFront: null, idBack: null, passbook: null });
   const [pendingFileType, setPendingFileType] = useState(null);
 
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
@@ -75,10 +75,10 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
 
     setIsSubmitting(true);
     try {
-      await onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.idFront, photos.idBack);
+      await onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.idFront, photos.idBack, photos.passbook);
       // Clear the form back to a blank state only after the submission succeeded
       setFormData(initialFormData);
-      setPhotos({ profile: null, idFront: null, idBack: null });
+      setPhotos({ profile: null, idFront: null, idBack: null, passbook: null });
       setEmpType(role === 'supervisor' ? 'Contractual' : 'Permanent');
     } catch (err) {
       // Dashboard already shows an alert with the specific error; just keep
@@ -183,13 +183,12 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
             </div>
           )}
 
-          <div className="col-span-1 md:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
+          <div className="col-span-1 md:col-span-3 grid grid-cols-1 md:grid-cols-4 gap-6 mt-4">
             <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
               <label className={labelClass}>Aadhaar - Front Side *</label>
               <input
                 type="file"
                 accept="image/*"
-                capture="environment"
                 ref={(el) => { fileInputRef.current.idFront = el; }}
                 onChange={handleWebFileChange}
                 className="hidden"
@@ -207,7 +206,6 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
               <input
                 type="file"
                 accept="image/*"
-                capture="environment"
                 ref={(el) => { fileInputRef.current.idBack = el; }}
                 onChange={handleWebFileChange}
                 className="hidden"
@@ -225,7 +223,6 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
               <input
                 type="file"
                 accept="image/*"
-                capture="environment"
                 ref={(el) => { fileInputRef.current.profile = el; }}
                 onChange={handleWebFileChange}
                 className="hidden"
@@ -236,6 +233,23 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
                 className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.profile ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
               >
                 {photos.profile ? '✅ Profile Saved (Tap to change)' : '📸 Camera or Gallery'}
+              </button>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
+              <label className={labelClass}>Passbook Photo <span className="text-slate-400 font-medium normal-case">(optional)</span></label>
+              <input
+                type="file"
+                accept="image/*"
+                ref={(el) => { fileInputRef.current.passbook = el; }}
+                onChange={handleWebFileChange}
+                className="hidden"
+              />
+              <button 
+                type="button" 
+                onClick={() => handleTakePhoto('passbook')}
+                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.passbook ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
+              >
+                {photos.passbook ? '✅ Passbook Saved (Tap to change)' : '📸 Camera or Gallery'}
               </button>
             </div>
           </div>

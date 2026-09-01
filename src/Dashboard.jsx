@@ -23,7 +23,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 
   // Modals & Menus State
   const [viewingWorker, setViewingWorker] = useState(null);
-  const [securePhotos, setSecurePhotos] = useState({ profile: null, idFront: null, idBack: null });
+  const [securePhotos, setSecurePhotos] = useState({ profile: null, idFront: null, idBack: null, passbook: null });
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
   const [targetSupervisor, setTargetSupervisor] = useState(null);
@@ -291,7 +291,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     return filePath;
   };
 
-  const handleAddWorker = async (formData, profileFile, aadharFrontFile, aadharBackFile) => {
+  const handleAddWorker = async (formData, profileFile, aadharFrontFile, aadharBackFile, passbookFile) => {
     let companyId = role === 'supervisor' ? supervisorData.company_id : formData.companyId;
     let plantId = role === 'supervisor' ? supervisorData.plant_id : formData.plantId;
     
@@ -309,6 +309,9 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const profileUrl = await uploadImage(profileFile, `${plant.plant_code}_profile`);
     const aadharFrontUrl = await uploadImage(aadharFrontFile, `${plant.plant_code}_aadhar_front`);
     const aadharBackUrl = await uploadImage(aadharBackFile, `${plant.plant_code}_aadhar_back`);
+    // Passbook is optional -- uploadImage already returns null when passed a
+    // null file, so this is safe to call unconditionally.
+    const passbookUrl = await uploadImage(passbookFile, `${plant.plant_code}_passbook`);
 
     const workerPayload = {
       workspace_id: workspaceId, company_id: company.id, plant_id: plant.id,
@@ -317,7 +320,8 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       post: formData.designation, joining_date: formData.joiningDate, experience: formData.experience,
       previous_company: formData.previousCompany, monthly_salary: parseFloat(formData.salary),
       id_proof_type: formData.idProofType, aadhar_number: formData.aadhar,
-      profile_photo_url: profileUrl, aadhar_photo_url: aadharFrontUrl, aadhar_back_photo_url: aadharBackUrl, is_active: true
+      profile_photo_url: profileUrl, aadhar_photo_url: aadharFrontUrl, aadhar_back_photo_url: aadharBackUrl,
+      passbook_photo_url: passbookUrl, is_active: true
     };
 
     if (formData.employmentType === 'Contractual') {
@@ -581,12 +585,13 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   const handleViewProfile = async (worker, type) => {
     setViewingWorker({ ...worker, type });
     setIsLoadingPhotos(true);
-    setSecurePhotos({ profile: null, idFront: null, idBack: null });
+    setSecurePhotos({ profile: null, idFront: null, idBack: null, passbook: null });
 
     try {
       let pUrl = null;
       let idFrontUrl = null;
       let idBackUrl = null;
+      let passbookUrl = null;
 
       if (worker.profile_photo_url) {
         const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.profile_photo_url, 3600);
@@ -603,14 +608,23 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
         idBackUrl = data?.signedUrl;
       }
 
+      // Passbook is optional -- a worker may simply not have one, which is
+      // a normal state, not an error, so it's handled the same way as the
+      // required photos (falls back to 'not_found' -> hidden card below).
+      if (worker.passbook_photo_url) {
+        const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.passbook_photo_url, 3600);
+        passbookUrl = data?.signedUrl;
+      }
+
       setSecurePhotos({ 
         profile: pUrl || 'not_found', 
         idFront: idFrontUrl || 'not_found',
         idBack: idBackUrl || 'not_found',
+        passbook: passbookUrl || 'not_found',
       });
     } catch (error) {
       console.error("Image fetch error:", error);
-      setSecurePhotos({ profile: 'not_found', idFront: 'not_found', idBack: 'not_found' });
+      setSecurePhotos({ profile: 'not_found', idFront: 'not_found', idBack: 'not_found', passbook: 'not_found' });
     } finally {
       setIsLoadingPhotos(false);
     }
@@ -967,7 +981,7 @@ return (
                   <h3 className="text-xl font-extrabold text-slate-900">Resource Profile</h3>
                   <p className="text-sm font-medium text-slate-500 mt-0.5">Added by: <span className="text-blue-600 font-bold">{viewingWorker.added_by || 'Unknown'}</span></p>
                 </div>
-                <button onClick={() => { setViewingWorker(null); setSecurePhotos({profile:null, idFront:null, idBack:null}); }} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-lg border border-slate-200 shadow-sm transition-colors"><X size={20} /></button>
+                <button onClick={() => { setViewingWorker(null); setSecurePhotos({profile:null, idFront:null, idBack:null, passbook:null}); }} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-lg border border-slate-200 shadow-sm transition-colors"><X size={20} /></button>
               </div>
 
               <div className="overflow-y-auto p-8 flex flex-col md:flex-row gap-10">
@@ -1022,6 +1036,19 @@ return (
                       )}
                     </div>
                   </div>
+                  {!isLoadingPhotos && securePhotos.passbook && securePhotos.passbook !== 'not_found' && (
+                    <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Passbook</p>
+                        <button onClick={() => downloadImage(securePhotos.passbook, `${viewingWorker.name}_passbook.jpg`)} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1">
+                          <Download size={13} /> Download
+                        </button>
+                      </div>
+                      <div className="aspect-video rounded-xl overflow-hidden bg-slate-50 border border-slate-100 flex items-center justify-center shadow-inner">
+                        <img src={securePhotos.passbook} alt="Passbook" className="w-full h-full object-cover" />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="w-full md:w-2/3">
