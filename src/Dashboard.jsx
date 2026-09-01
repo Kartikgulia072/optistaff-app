@@ -136,6 +136,13 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     if (!workspaceId) return;
     if (role === 'supervisor' && !supervisorData) return;
 
+    // A supervisor can now have multiple accessible plants -- companies
+    // (already scoped down to just what they can see, built in
+    // setupWorkspaceAndFetchData) gives us every plant_id to watch. Wait
+    // until that's actually loaded before subscribing to anything.
+    const accessiblePlantIds = companies.flatMap(c => c.plants || []).map(p => p.id);
+    if (role === 'supervisor' && accessiblePlantIds.length === 0) return;
+
     const notify = (title, body) => {
       LocalNotifications.schedule({
         notifications: [{
@@ -178,22 +185,55 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
         }
       };
 
+      const plantFilter = `plant_id=in.(${accessiblePlantIds.join(',')})`;
       channel
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employees', filter: `plant_id=eq.${supervisorData.plant_id}` }, handleApprovedChange)
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'supervisors', filter: `plant_id=eq.${supervisorData.plant_id}` }, handleApprovedChange);
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employees', filter: plantFilter }, handleApprovedChange)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'supervisors', filter: plantFilter }, handleApprovedChange);
     }
 
     channel.subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [workspaceId, role, supervisorData]);
+  }, [workspaceId, role, supervisorData, companies]);
 
   const setupWorkspaceAndFetchData = async () => {
     try {
       if (role === 'supervisor' && supervisorData) {
         setWorkspaceId(supervisorData.workspace_id);
-        const { data: plantData } = await supabase.from('plants').select('*, companies(*)').eq('id', supervisorData.plant_id).single();
-        if (plantData && plantData.companies) setCompanies([{ ...plantData.companies, plants: [plantData] }]);
-        const { data: empData } = await supabase.from('employees').select('*').eq('plant_id', supervisorData.plant_id);
+
+        // A supervisor can now be granted access to multiple plants (even
+        // across different companies) via supervisor_plant_access. Existing
+        // supervisors who were never explicitly granted anything there fall
+        // back to just their original single plant, so nobody who was
+        // already working gets locked out by this change.
+        const { data: accessRows } = await supabase
+          .from('supervisor_plant_access')
+          .select('plant_id, plants(*, companies(*))')
+          .eq('supervisor_id', supervisorData.id);
+
+        let accessiblePlants = (accessRows || []).map(r => r.plants).filter(Boolean);
+
+        if (accessiblePlants.length === 0) {
+          const { data: plantData } = await supabase.from('plants').select('*, companies(*)').eq('id', supervisorData.plant_id).single();
+          if (plantData) accessiblePlants = [plantData];
+        }
+
+        // Group the flat list of plants back into the same
+        // { ...company, plants: [...] } shape used everywhere else in the
+        // app, but scoped to only what this supervisor can actually see.
+        const grouped = [];
+        accessiblePlants.forEach(plant => {
+          const company = plant.companies;
+          if (!company) return;
+          let entry = grouped.find(c => c.id === company.id);
+          if (!entry) { entry = { ...company, plants: [] }; grouped.push(entry); }
+          const plantOnly = { ...plant };
+          delete plantOnly.companies;
+          entry.plants.push(plantOnly);
+        });
+        setCompanies(grouped);
+
+        const accessiblePlantIds = accessiblePlants.map(p => p.id);
+        const { data: empData } = await supabase.from('employees').select('*').in('plant_id', accessiblePlantIds);
         if (empData) setEmployees(empData);
         return;
       }
@@ -227,7 +267,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       const { data: companiesData } = await supabase.from('companies').select('*, plants(*)').eq('workspace_id', workspace.id).order('created_at', { ascending: false });
       if (companiesData) setCompanies(companiesData);
 
-      const { data: supData } = await supabase.from('supervisors').select('*').eq('workspace_id', workspace.id);
+      const { data: supData } = await supabase.from('supervisors').select('*, supervisor_plant_access(plant_id)').eq('workspace_id', workspace.id);
       if (supData) setSupervisors(supData);
 
       const { data: empData } = await supabase.from('employees').select('*').eq('workspace_id', workspace.id);
@@ -601,7 +641,11 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     e.preventDefault(); setLoading(true);
     const { data, error } = await supabase.from('supervisors').update({ username: targetSupervisor.supervisor_code.toLowerCase(), password: credentials.password }).eq('id', targetSupervisor.id).select();
     if (!error && data) {
-      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
+      // .update().select() only returns this table's own columns, not the
+      // nested supervisor_plant_access relation -- carry it over manually
+      // so the Access tab doesn't appear to lose its data.
+      const merged = { ...data[0], supervisor_plant_access: targetSupervisor.supervisor_plant_access };
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? merged : s));
       setShowCredentialsModal(false); setTargetSupervisor(null); setCredentials({ password: '' });
     }
     setLoading(false);
@@ -613,8 +657,9 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const updatedDepts = [...(targetSupervisor.allowed_departments || []), newDept.trim()];
     const { data } = await supabase.from('supervisors').update({ allowed_departments: updatedDepts }).eq('id', targetSupervisor.id).select();
     if (data) {
-      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
-      setTargetSupervisor(data[0]); setNewDept('');
+      const merged = { ...data[0], supervisor_plant_access: targetSupervisor.supervisor_plant_access };
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? merged : s));
+      setTargetSupervisor(merged); setNewDept('');
     }
   };
 
@@ -622,9 +667,32 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const updatedDepts = targetSupervisor.allowed_departments.filter(d => d !== deptToRemove);
     const { data } = await supabase.from('supervisors').update({ allowed_departments: updatedDepts }).eq('id', targetSupervisor.id).select();
     if (data) {
-      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? data[0] : s));
-      setTargetSupervisor(data[0]);
+      const merged = { ...data[0], supervisor_plant_access: targetSupervisor.supervisor_plant_access };
+      setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? merged : s));
+      setTargetSupervisor(merged);
     }
+  };
+
+  // Grants or revokes a supervisor's access to a specific plant. Unlike the
+  // department list (a plain array column on supervisors), plant access
+  // lives in its own join table so a supervisor can belong to plants across
+  // multiple different companies at once.
+  const handleToggleSupervisorAccess = async (plantId, isCurrentlyGranted) => {
+    if (isCurrentlyGranted) {
+      const { error } = await supabase.from('supervisor_plant_access').delete().eq('supervisor_id', targetSupervisor.id).eq('plant_id', plantId);
+      if (error) { alert('Error updating access: ' + error.message); return; }
+    } else {
+      const { error } = await supabase.from('supervisor_plant_access').insert([{ supervisor_id: targetSupervisor.id, plant_id: plantId }]);
+      if (error) { alert('Error updating access: ' + error.message); return; }
+    }
+
+    const updatedAccess = isCurrentlyGranted
+      ? (targetSupervisor.supervisor_plant_access || []).filter(a => a.plant_id !== plantId)
+      : [...(targetSupervisor.supervisor_plant_access || []), { plant_id: plantId }];
+
+    const updatedSupervisor = { ...targetSupervisor, supervisor_plant_access: updatedAccess };
+    setTargetSupervisor(updatedSupervisor);
+    setSupervisors(supervisors.map(s => s.id === targetSupervisor.id ? updatedSupervisor : s));
   };
 
   const headerDetails = {
@@ -818,6 +886,7 @@ return (
               <div className="flex border-b border-slate-200 bg-slate-50 px-2 pt-2">
                 <button onClick={() => setManageTab('credentials')} className={`flex-1 py-3 text-sm font-bold transition-all rounded-t-xl ${manageTab === 'credentials' ? 'bg-white text-blue-600 border-t border-l border-r border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Logins</button>
                 <button onClick={() => setManageTab('departments')} className={`flex-1 py-3 text-sm font-bold transition-all rounded-t-xl ${manageTab === 'departments' ? 'bg-white text-blue-600 border-t border-l border-r border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Departments</button>
+                <button onClick={() => setManageTab('access')} className={`flex-1 py-3 text-sm font-bold transition-all rounded-t-xl ${manageTab === 'access' ? 'bg-white text-blue-600 border-t border-l border-r border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Companies</button>
               </div>
 
               {manageTab === 'credentials' && (
@@ -852,6 +921,37 @@ return (
                         <button onClick={() => handleRemoveDepartment(dept)} className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-1.5 rounded-lg transition-colors"><Trash2 size={16} /></button>
                       </div>
                     )) : <p className="text-sm font-medium text-slate-400 italic text-center py-4 bg-slate-50 rounded-xl border border-slate-200 border-dashed">No departments assigned yet.</p>}
+                  </div>
+                </div>
+              )}
+
+              {manageTab === 'access' && (
+                <div className="p-6">
+                  <p className="text-sm font-medium text-slate-500 mb-5">Choose which companies and plant units this supervisor is allowed to add employees into. They can be given access to more than one.</p>
+                  <div className="space-y-4 max-h-80 overflow-y-auto pr-1">
+                    {companies.length === 0 && <p className="text-sm font-medium text-slate-400 italic text-center py-4">No companies added yet.</p>}
+                    {companies.map(company => (
+                      <div key={company.id} className="border border-slate-200 rounded-xl overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2.5 font-bold text-sm text-slate-700">{company.company_name}</div>
+                        <div className="divide-y divide-slate-100">
+                          {(company.plants || []).map(plant => {
+                            const isGranted = (targetSupervisor.supervisor_plant_access || []).some(a => a.plant_id === plant.id);
+                            return (
+                              <label key={plant.id} className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-slate-50 transition-colors">
+                                <span className="text-sm font-semibold text-slate-700">{plant.plant_name} <span className="text-slate-400 font-medium">· {plant.location}</span></span>
+                                <input
+                                  type="checkbox"
+                                  checked={isGranted}
+                                  onChange={() => handleToggleSupervisorAccess(plant.id, isGranted)}
+                                  className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                />
+                              </label>
+                            );
+                          })}
+                          {(company.plants || []).length === 0 && <p className="px-4 py-3 text-xs text-slate-400 italic">No plants under this company yet.</p>}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
