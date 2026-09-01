@@ -1,9 +1,10 @@
-import { Building2, Factory } from 'lucide-react';
+import { Building2, Factory, Trash2 } from 'lucide-react';
 
 export default function AddInfrastructure({ 
   companies, 
   newCompany, setNewCompany, handleAddCompany, 
   newPlant, setNewPlant, handleAddPlant, 
+  handleDeleteCompany, handleDeletePlant,
   loading 
 }) {
   const inputClass = "w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all text-sm shadow-sm";
@@ -71,6 +72,57 @@ export default function AddInfrastructure({
           </form>
         </div>
 
+      </div>
+
+      {/* MANAGE EXISTING */}
+      <div className="bg-white p-8 rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 mt-8">
+        <div className="mb-6 pb-4 border-b border-slate-100">
+          <h2 className="text-xl font-extrabold text-slate-900">Manage Existing</h2>
+          <p className="text-sm font-medium text-slate-500">Remove a company or plant unit you no longer need. A company can only be removed once all its plants are removed, and a plant can only be removed once it has no employees or supervisors assigned to it.</p>
+        </div>
+
+        {companies.length === 0 && <p className="text-sm text-slate-400 font-medium">No companies added yet.</p>}
+
+        <div className="space-y-4">
+          {companies.map(company => (
+            <div key={company.id} className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between bg-slate-50 px-5 py-3">
+                <div className="flex items-center gap-2.5">
+                  <Building2 size={16} className="text-blue-700" />
+                  <span className="font-bold text-slate-800">{company.company_name}</span>
+                  <span className="text-xs text-slate-400 font-semibold">({company.company_code})</span>
+                </div>
+                <button
+                  onClick={() => handleDeleteCompany(company)}
+                  title="Delete company"
+                  className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+              {(company.plants || []).length > 0 && (
+                <div className="divide-y divide-slate-100">
+                  {company.plants.map(plant => (
+                    <div key={plant.id} className="flex items-center justify-between px-5 py-2.5 pl-10">
+                      <div className="flex items-center gap-2.5 text-sm">
+                        <Factory size={14} className="text-emerald-700" />
+                        <span className="font-semibold text-slate-700">{plant.plant_name}</span>
+                        <span className="text-xs text-slate-400">{plant.location} · {plant.plant_code}</span>
+                      </div>
+                      <button
+                        onClick={() => handleDeletePlant(company, plant)}
+                        title="Delete plant"
+                        className="text-slate-400 hover:text-red-600 hover:bg-red-50 p-1.5 rounded-lg transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Eye, CheckCircle, RefreshCw, Power, Trash2 } from 'lucide-react';
+import { Eye, CheckCircle, RefreshCw, Power, Trash2, FileDown } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 export default function ResourceTable({ activeTab, role, companies, supervisors, employees, onToggleStatus, onApprove, onViewProfile, onHardDelete }) {
   const [empType, setEmpType] = useState('Contractual'); // Defaulting to Contractual
@@ -24,23 +25,68 @@ export default function ResourceTable({ activeTab, role, companies, supervisors,
     return new Date(dateString).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   };
 
+  // Exports the full filtered list (every matching worker, not just the
+  // current page) as a real downloadable .xlsx file, generated entirely in
+  // the browser from data already loaded -- no server round-trip needed.
+  const handleExportExcel = () => {
+    const exportRows = filteredData.map(w => {
+      const company = companies.find(c => c.id === w.company_id);
+      const plant = company?.plants?.find(p => p.id === w.plant_id);
+      return {
+        'ID': w.supervisor_code || w.employee_code || 'Unassigned',
+        'Name': w.name,
+        "Father's Name": w.father_name || '',
+        'Phone': w.phone || '',
+        'DOB': w.dob || '',
+        'Gender': w.gender || '',
+        'Company': company?.company_name || '',
+        'Plant': plant?.plant_name || '',
+        'Department': w.department || '',
+        'Designation': w.post || w.designation || '',
+        'Monthly Salary': w.monthly_salary || 0,
+        'Joining Date': w.joining_date || '',
+        'Experience': w.experience || '',
+        'Previous Company': w.previous_company || '',
+        'ID Proof Type': w.id_proof_type || '',
+        'Aadhar Number': w.aadhar_number || '',
+        'UAN Number': w.uan_number || '',
+        'ESI Number': w.esi_number || '',
+        'Status': isRelieved ? 'Relieved' : 'Active',
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, `${empType} - ${isRelieved ? 'Relieved' : 'Existing'}`);
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, `OptiStaff_${isRelieved ? 'Relieved' : 'Existing'}_${empType}_${dateStamp}.xlsx`);
+  };
+
   const thClass = "px-5 py-4 font-bold text-slate-600 border-b border-slate-200";
   const tdClass = "px-5 py-4 font-medium text-slate-700 border-b border-slate-100";
 
   return (
     <div className="max-w-full animate-in fade-in duration-300">
-      <div className="flex gap-3 mb-6 bg-slate-200/50 p-1.5 rounded-xl w-fit">
-        
-        {/* Only Admins can view Permanent workers in the table */}
-        {role === 'admin' && (
-          <button onClick={() => { setEmpType('Permanent'); setCurrentPage(0); }} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Permanent' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
-            Permanent
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        <div className="flex gap-3 bg-slate-200/50 p-1.5 rounded-xl w-fit">
+          
+          {/* Only Admins can view Permanent workers in the table */}
+          {role === 'admin' && (
+            <button onClick={() => { setEmpType('Permanent'); setCurrentPage(0); }} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Permanent' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
+              Permanent
+            </button>
+          )}
+          
+          <button onClick={() => { setEmpType('Contractual'); setCurrentPage(0); }} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Contractual' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
+            Contractual
+          </button>
+        </div>
+
+        {!isPending && (
+          <button onClick={handleExportExcel} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-5 py-2.5 rounded-lg text-sm shadow-sm shadow-emerald-600/20 transition-colors">
+            <FileDown size={16} /> Download Excel
           </button>
         )}
-        
-        <button onClick={() => { setEmpType('Contractual'); setCurrentPage(0); }} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Contractual' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
-          Contractual
-        </button>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-x-auto shadow-xl shadow-slate-200/40">

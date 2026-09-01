@@ -9,7 +9,7 @@ import AdminOverview from './components/AdminOverview';
 import ResourceTable from './components/ResourceTable';
 import CreateResource from './components/CreateResource';
 import AddInfrastructure from './components/AddInfrastructure';
-import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu } from 'lucide-react';
+import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu, Download } from 'lucide-react';
 
 export default function Dashboard({ role = 'admin', supervisorData = null, onLogout }) {
   // Supervisors immediately default to the 'create' tab
@@ -23,7 +23,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 
   // Modals & Menus State
   const [viewingWorker, setViewingWorker] = useState(null);
-  const [securePhotos, setSecurePhotos] = useState({ profile: null, id: null });
+  const [securePhotos, setSecurePhotos] = useState({ profile: null, idFront: null, idBack: null });
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
   const [targetSupervisor, setTargetSupervisor] = useState(null);
@@ -251,7 +251,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     return filePath;
   };
 
-  const handleAddWorker = async (formData, profileFile, aadharFile) => {
+  const handleAddWorker = async (formData, profileFile, aadharFrontFile, aadharBackFile) => {
     let companyId = role === 'supervisor' ? supervisorData.company_id : formData.companyId;
     let plantId = role === 'supervisor' ? supervisorData.plant_id : formData.plantId;
     
@@ -267,7 +267,8 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     if (!company || !plant) { alert("Error: Please select a valid company and plant."); return; }
 
     const profileUrl = await uploadImage(profileFile, `${plant.plant_code}_profile`);
-    const aadharUrl = await uploadImage(aadharFile, `${plant.plant_code}_aadhar`);
+    const aadharFrontUrl = await uploadImage(aadharFrontFile, `${plant.plant_code}_aadhar_front`);
+    const aadharBackUrl = await uploadImage(aadharBackFile, `${plant.plant_code}_aadhar_back`);
 
     const workerPayload = {
       workspace_id: workspaceId, company_id: company.id, plant_id: plant.id,
@@ -276,7 +277,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       post: formData.designation, joining_date: formData.joiningDate, experience: formData.experience,
       previous_company: formData.previousCompany, monthly_salary: parseFloat(formData.salary),
       id_proof_type: formData.idProofType, aadhar_number: formData.aadhar,
-      profile_photo_url: profileUrl, aadhar_photo_url: aadharUrl, is_active: true
+      profile_photo_url: profileUrl, aadhar_photo_url: aadharFrontUrl, aadhar_back_photo_url: aadharBackUrl, is_active: true
     };
 
     if (formData.employmentType === 'Contractual') {
@@ -399,6 +400,36 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     else setEmployees(employees.filter(e => e.id !== workerId));
   };
 
+  const handleDeleteCompany = async (company) => {
+    if (company.plants && company.plants.length > 0) {
+      alert(`Can't delete "${company.company_name}" — it still has ${company.plants.length} plant unit(s) under it. Delete those first.`);
+      return;
+    }
+    if (!confirm(`Delete "${company.company_name}"? This cannot be undone.`)) return;
+
+    const { error } = await supabase.from('companies').delete().eq('id', company.id);
+    if (error) { alert('Error deleting company: ' + error.message); return; }
+    setCompanies(companies.filter(c => c.id !== company.id));
+  };
+
+  const handleDeletePlant = async (company, plant) => {
+    // Refuse to delete a plant that still has employees or supervisors
+    // assigned to it -- otherwise their plant_id would point at nothing.
+    const [{ count: empCount }, { count: supCount }] = await Promise.all([
+      supabase.from('employees').select('id', { count: 'exact', head: true }).eq('plant_id', plant.id),
+      supabase.from('supervisors').select('id', { count: 'exact', head: true }).eq('plant_id', plant.id),
+    ]);
+    if ((empCount || 0) + (supCount || 0) > 0) {
+      alert(`Can't delete "${plant.plant_name}" — it still has ${empCount || 0} employee(s) and ${supCount || 0} supervisor(s) assigned to it.`);
+      return;
+    }
+    if (!confirm(`Delete plant "${plant.plant_name}"? This cannot be undone.`)) return;
+
+    const { error } = await supabase.from('plants').delete().eq('id', plant.id);
+    if (error) { alert('Error deleting plant: ' + error.message); return; }
+    setCompanies(companies.map(c => c.id === company.id ? { ...c, plants: c.plants.filter(p => p.id !== plant.id) } : c));
+  };
+
   const handleAddCompany = async (e) => {
     e.preventDefault(); setLoading(true);
     const { data, error } = await supabase.from('companies').insert([{ 
@@ -510,11 +541,12 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   const handleViewProfile = async (worker, type) => {
     setViewingWorker({ ...worker, type });
     setIsLoadingPhotos(true);
-    setSecurePhotos({ profile: null, id: null });
+    setSecurePhotos({ profile: null, idFront: null, idBack: null });
 
     try {
       let pUrl = null;
-      let iUrl = null;
+      let idFrontUrl = null;
+      let idBackUrl = null;
 
       if (worker.profile_photo_url) {
         const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.profile_photo_url, 3600);
@@ -523,18 +555,45 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       
       if (worker.aadhar_photo_url) {
         const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.aadhar_photo_url, 3600);
-        iUrl = data?.signedUrl;
+        idFrontUrl = data?.signedUrl;
+      }
+
+      if (worker.aadhar_back_photo_url) {
+        const { data } = await supabase.storage.from('worker_docs').createSignedUrl(worker.aadhar_back_photo_url, 3600);
+        idBackUrl = data?.signedUrl;
       }
 
       setSecurePhotos({ 
         profile: pUrl || 'not_found', 
-        id: iUrl || 'not_found' 
+        idFront: idFrontUrl || 'not_found',
+        idBack: idBackUrl || 'not_found',
       });
     } catch (error) {
       console.error("Image fetch error:", error);
-      setSecurePhotos({ profile: 'not_found', id: 'not_found' });
+      setSecurePhotos({ profile: 'not_found', idFront: 'not_found', idBack: 'not_found' });
     } finally {
       setIsLoadingPhotos(false);
+    }
+  };
+
+  // Downloads an image to the user's device regardless of the image's
+  // origin -- a plain <a download> tag gets silently ignored by most
+  // browsers for cross-origin URLs like these signed Supabase links, so we
+  // fetch the bytes ourselves and trigger the download from a local blob.
+  const downloadImage = async (url, filename) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      alert('Download failed: ' + err.message);
     }
   };
 
@@ -656,6 +715,7 @@ return (
               companies={companies}
               newCompany={newCompany} setNewCompany={setNewCompany} handleAddCompany={handleAddCompany}
               newPlant={newPlant} setNewPlant={setNewPlant} handleAddPlant={handleAddPlant}
+              handleDeleteCompany={handleDeleteCompany} handleDeletePlant={handleDeletePlant}
               loading={loading}
             />
           )}
@@ -807,7 +867,7 @@ return (
                   <h3 className="text-xl font-extrabold text-slate-900">Resource Profile</h3>
                   <p className="text-sm font-medium text-slate-500 mt-0.5">Added by: <span className="text-blue-600 font-bold">{viewingWorker.added_by || 'Unknown'}</span></p>
                 </div>
-                <button onClick={() => { setViewingWorker(null); setSecurePhotos({profile:null, id:null}); }} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-lg border border-slate-200 shadow-sm transition-colors"><X size={20} /></button>
+                <button onClick={() => { setViewingWorker(null); setSecurePhotos({profile:null, idFront:null, idBack:null}); }} className="text-slate-400 hover:text-slate-700 bg-white p-2 rounded-lg border border-slate-200 shadow-sm transition-colors"><X size={20} /></button>
               </div>
 
               <div className="overflow-y-auto p-8 flex flex-col md:flex-row gap-10">
@@ -825,12 +885,38 @@ return (
                     </div>
                   </div>
                   <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">ID Proof Document</p>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Aadhaar - Front</p>
+                      {securePhotos.idFront && securePhotos.idFront !== 'not_found' && (
+                        <button onClick={() => downloadImage(securePhotos.idFront, `${viewingWorker.name}_aadhar_front.jpg`)} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1">
+                          <Download size={13} /> Download
+                        </button>
+                      )}
+                    </div>
                     <div className="aspect-video rounded-xl overflow-hidden bg-slate-50 border border-slate-100 flex items-center justify-center shadow-inner">
                       {isLoadingPhotos ? (
                         <span className="text-slate-400 font-medium text-sm animate-pulse">Loading secure image...</span>
-                      ) : securePhotos.id && securePhotos.id !== 'not_found' ? (
-                        <img src={securePhotos.id} alt="ID Document" className="w-full h-full object-cover" />
+                      ) : securePhotos.idFront && securePhotos.idFront !== 'not_found' ? (
+                        <img src={securePhotos.idFront} alt="Aadhaar Front" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-red-400 font-medium text-sm text-center px-4">Image not found.<br/>Upload failed or missing.</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Aadhaar - Back</p>
+                      {securePhotos.idBack && securePhotos.idBack !== 'not_found' && (
+                        <button onClick={() => downloadImage(securePhotos.idBack, `${viewingWorker.name}_aadhar_back.jpg`)} className="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1">
+                          <Download size={13} /> Download
+                        </button>
+                      )}
+                    </div>
+                    <div className="aspect-video rounded-xl overflow-hidden bg-slate-50 border border-slate-100 flex items-center justify-center shadow-inner">
+                      {isLoadingPhotos ? (
+                        <span className="text-slate-400 font-medium text-sm animate-pulse">Loading secure image...</span>
+                      ) : securePhotos.idBack && securePhotos.idBack !== 'not_found' ? (
+                        <img src={securePhotos.idBack} alt="Aadhaar Back" className="w-full h-full object-cover" />
                       ) : (
                         <span className="text-red-400 font-medium text-sm text-center px-4">Image not found.<br/>Upload failed or missing.</span>
                       )}
