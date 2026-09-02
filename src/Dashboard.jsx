@@ -25,6 +25,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   // Modals & Menus State
   const [viewingWorker, setViewingWorker] = useState(null);
   const [editingWorker, setEditingWorker] = useState(null); // { worker, empType } or null
+  const [serviceRestricted, setServiceRestricted] = useState(false);
   const [securePhotos, setSecurePhotos] = useState({ profile: null, idFront: null, idBack: null, passbook: null });
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
@@ -202,6 +203,15 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       if (role === 'supervisor' && supervisorData) {
         setWorkspaceId(supervisorData.workspace_id);
 
+        // Catches a workspace disabled AFTER this supervisor already logged
+        // in and stayed logged in -- the login-time check alone only stops
+        // new sign-ins, not sessions that were already active.
+        const { data: wsCheck } = await supabase.from('workspaces').select('is_disabled').eq('id', supervisorData.workspace_id).maybeSingle();
+        if (wsCheck?.is_disabled) {
+          setServiceRestricted(true);
+          return;
+        }
+
         // A supervisor can now be granted access to multiple plants (even
         // across different companies) via supervisor_plant_access. Existing
         // supervisors who were never explicitly granted anything there fall
@@ -261,6 +271,14 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
           return; 
         }
         workspace = newWs;
+      }
+
+      // Same idea as the supervisor check above -- catches a workspace that
+      // got disabled while this admin was already signed in.
+      if (workspace.is_disabled) {
+        setServiceRestricted(true);
+        await supabase.auth.signOut();
+        return;
       }
 
       setWorkspaceId(workspace.id);
@@ -820,6 +838,28 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     });
     return () => { cancelled = true; };
   }, [displayPhoto]);
+
+  if (serviceRestricted) {
+    return (
+      <div className="fixed inset-0 bg-slate-950 flex items-center justify-center p-4 z-50">
+        <div className="max-w-md w-full bg-slate-900 border border-red-900/50 rounded-2xl p-8 text-center">
+          <div className="w-16 h-16 bg-red-950 border border-red-900 rounded-full flex items-center justify-center mx-auto mb-5">
+            <Shield size={28} className="text-red-500" />
+          </div>
+          <h2 className="text-xl font-extrabold text-white mb-2">Service Restricted</h2>
+          <p className="text-slate-400 text-sm font-medium mb-6">
+            This workspace has been disabled by the administrator. You no longer have access to OptiStaff. Please contact your workspace administrator for assistance.
+          </p>
+          <button
+            onClick={onLogout}
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors"
+          >
+            Log Out
+          </button>
+        </div>
+      </div>
+    );
+  }
 
 return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">

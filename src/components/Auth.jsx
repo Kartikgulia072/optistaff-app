@@ -69,6 +69,11 @@ export default function Auth({ onSupervisorLogin }) {
         throw new Error("Invalid credentials or your account is deactivated.");
       }
 
+      const { data: ws } = await supabase.from('workspaces').select('is_disabled').eq('id', data.workspace_id).maybeSingle();
+      if (ws?.is_disabled) {
+        throw new Error("This workspace has been disabled. Contact support for assistance.");
+      }
+
       onSupervisorLogin(data);
     } catch (error) {
       setErrorMsg(error.message);

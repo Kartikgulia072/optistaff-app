@@ -10,6 +10,33 @@ function formatBytes(bytes) {
   return `${(mb / 1024).toFixed(2)} GB`;
 }
 
+// A used/limit gauge with a percentage bar, reused for both the Postgres
+// database size and the file storage bucket size -- two separate quotas on
+// Supabase's free tier.
+function StorageGauge({ icon: Icon, iconColor, label, usedBytes, limitBytes, note }) {
+  const percentUsed = Math.min(100, (usedBytes / limitBytes) * 100);
+  const percentRemaining = Math.max(0, 100 - percentUsed);
+  const barColor = percentUsed > 85 ? 'bg-red-500' : percentUsed > 60 ? 'bg-amber-500' : 'bg-blue-500';
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
+        <p className="text-slate-300 text-sm font-bold flex items-center gap-2"><Icon size={16} className={iconColor} /> {label}</p>
+        <p className="text-slate-400 text-sm font-semibold">
+          {formatBytes(usedBytes)} <span className="text-slate-600">/ {formatBytes(limitBytes)}</span>
+          <span className={`ml-2 font-bold ${percentUsed > 85 ? 'text-red-400' : percentUsed > 60 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {percentRemaining.toFixed(1)}% left
+          </span>
+        </p>
+      </div>
+      <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${percentUsed}%` }} />
+      </div>
+      {note && <p className="text-slate-500 text-xs mt-2">{note}</p>}
+    </div>
+  );
+}
+
 export default function SuperAdmin() {
   const [checking, setChecking] = useState(true);
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -23,6 +50,7 @@ export default function SuperAdmin() {
 
   const [dbSizeBytes, setDbSizeBytes] = useState(null);
   const FREE_TIER_DB_LIMIT_BYTES = 500 * 1024 * 1024; // Supabase free tier: 500 MB database
+  const FREE_TIER_STORAGE_LIMIT_BYTES = 1024 * 1024 * 1024; // Supabase free tier: 1 GB file storage
 
   const [orphanScan, setOrphanScan] = useState(null); // { files: [...], totalBytes } once scanned
   const [scanningOrphans, setScanningOrphans] = useState(false);
@@ -265,24 +293,28 @@ export default function SuperAdmin() {
         </div>
       </div>
 
-      {/* Database size gauge -- a separate quota from the file storage bucket above */}
-      {dbSizeBytes !== null && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-slate-300 text-sm font-bold flex items-center gap-2"><Database size={16} className="text-blue-500" /> Database Storage (Postgres)</p>
-            <p className="text-slate-400 text-sm font-semibold">
-              {formatBytes(dbSizeBytes)} <span className="text-slate-600">/ {formatBytes(FREE_TIER_DB_LIMIT_BYTES)} free tier limit</span>
-            </p>
-          </div>
-          <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${(dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) > 0.85 ? 'bg-red-500' : (dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) > 0.6 ? 'bg-amber-500' : 'bg-blue-500'}`}
-              style={{ width: `${Math.min(100, (dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) * 100)}%` }}
-            />
-          </div>
-          <p className="text-slate-500 text-xs mt-2">This is your actual database (records, not photos) — separate from File Storage above. If you're on a paid Supabase plan, this limit no longer applies the same way.</p>
-        </div>
-      )}
+      {/* Storage gauges -- two separate Supabase quotas: the Postgres
+          database itself, and the worker_docs file storage bucket. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+        {dbSizeBytes !== null && (
+          <StorageGauge
+            icon={Database}
+            iconColor="text-blue-500"
+            label="Database Storage (Postgres)"
+            usedBytes={dbSizeBytes}
+            limitBytes={FREE_TIER_DB_LIMIT_BYTES}
+            note="Your actual database records — separate from the photo files below. If you're on a paid Supabase plan, this limit no longer applies the same way."
+          />
+        )}
+        <StorageGauge
+          icon={HardDrive}
+          iconColor="text-purple-400"
+          label="Media Storage (worker_docs bucket)"
+          usedBytes={totalStorage}
+          limitBytes={FREE_TIER_STORAGE_LIMIT_BYTES}
+          note="All uploaded profile photos, Aadhaar images, and passbook photos across every workspace combined."
+        />
+      </div>
 
       {/* Orphaned file cleanup */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
