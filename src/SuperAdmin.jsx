@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
-import { Shield, Lock, Mail, LogOut, HardDrive, Ban, CheckCircle2, Users, Briefcase, RefreshCw } from 'lucide-react';
+import { Shield, Lock, Mail, LogOut, HardDrive, Ban, CheckCircle2, Users, Briefcase, RefreshCw, Database, Sparkles, AlertTriangle } from 'lucide-react';
 
 // Converts a raw byte count into a friendly "12.3 MB" style string.
 function formatBytes(bytes) {
@@ -20,6 +20,13 @@ export default function SuperAdmin() {
 
   const [workspaces, setWorkspaces] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
+
+  const [dbSizeBytes, setDbSizeBytes] = useState(null);
+  const FREE_TIER_DB_LIMIT_BYTES = 500 * 1024 * 1024; // Supabase free tier: 500 MB database
+
+  const [orphanScan, setOrphanScan] = useState(null); // { files: [...], totalBytes } once scanned
+  const [scanningOrphans, setScanningOrphans] = useState(false);
+  const [deletingOrphans, setDeletingOrphans] = useState(false);
 
   // On mount, if there's already an active Supabase Auth session (e.g. you're
   // also logged in as a normal admin in this browser), immediately check if
@@ -72,6 +79,7 @@ export default function SuperAdmin() {
 
   const fetchWorkspaces = async () => {
     setLoadingData(true);
+    setOrphanScan(null);
     try {
       const { data: wsList, error } = await supabase
         .from('workspaces')
@@ -102,11 +110,77 @@ export default function SuperAdmin() {
       }));
 
       setWorkspaces(withStats);
+
+      // Real Postgres database size, via a small SQL function (see setup
+      // instructions) -- this is a totally separate quota from the
+      // worker_docs storage bucket shown above.
+      const { data: dbSize, error: dbSizeError } = await supabase.rpc('get_database_size');
+      if (!dbSizeError) setDbSizeBytes(dbSize);
     } catch (err) {
       console.error('Failed to load workspaces:', err);
       alert('Failed to load workspaces: ' + err.message);
     } finally {
       setLoadingData(false);
+    }
+  };
+
+  // Step 1 of cleanup: find files sitting in storage that no longer belong
+  // to any employee or supervisor record -- these are exactly the leftovers
+  // from deletions made before the fix that made delete also clean up
+  // storage. This only SCANS and reports; nothing is deleted yet.
+  const scanForOrphans = async () => {
+    setScanningOrphans(true);
+    try {
+      const orphanFiles = [];
+
+      for (const ws of workspaces) {
+        const [{ data: files }, { data: emps }, { data: sups }] = await Promise.all([
+          supabase.storage.from('worker_docs').list(ws.id, { limit: 1000 }),
+          supabase.from('employees').select('profile_photo_url, aadhar_photo_url, aadhar_back_photo_url, passbook_photo_url').eq('workspace_id', ws.id),
+          supabase.from('supervisors').select('profile_photo_url, aadhar_photo_url, aadhar_back_photo_url, passbook_photo_url').eq('workspace_id', ws.id),
+        ]);
+
+        const referencedPaths = new Set();
+        [...(emps || []), ...(sups || [])].forEach(record => {
+          ['profile_photo_url', 'aadhar_photo_url', 'aadhar_back_photo_url', 'passbook_photo_url'].forEach(col => {
+            if (record[col]) referencedPaths.add(record[col]);
+          });
+        });
+
+        (files || []).forEach(f => {
+          const fullPath = `${ws.id}/${f.name}`;
+          if (!referencedPaths.has(fullPath)) {
+            orphanFiles.push({ path: fullPath, size: f.metadata?.size || 0, workspaceName: ws.admin_name || ws.name });
+          }
+        });
+      }
+
+      const totalBytes = orphanFiles.reduce((sum, f) => sum + f.size, 0);
+      setOrphanScan({ files: orphanFiles, totalBytes });
+    } catch (err) {
+      alert('Scan failed: ' + err.message);
+    } finally {
+      setScanningOrphans(false);
+    }
+  };
+
+  // Step 2: actually delete what the scan found, only after the admin has
+  // seen the count/size and explicitly confirmed.
+  const deleteOrphans = async () => {
+    if (!orphanScan || orphanScan.files.length === 0) return;
+    if (!confirm(`Permanently delete ${orphanScan.files.length} orphaned file(s) totaling ${formatBytes(orphanScan.totalBytes)}? This cannot be undone.`)) return;
+
+    setDeletingOrphans(true);
+    try {
+      const paths = orphanScan.files.map(f => f.path);
+      const { error } = await supabase.storage.from('worker_docs').remove(paths);
+      if (error) throw error;
+      setOrphanScan(null);
+      fetchWorkspaces();
+    } catch (err) {
+      alert('Cleanup failed: ' + err.message);
+    } finally {
+      setDeletingOrphans(false);
     }
   };
 
@@ -174,7 +248,7 @@ export default function SuperAdmin() {
           <p className="text-3xl font-extrabold">{workspaces.length}</p>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-          <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Total Storage Used</p>
+          <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">File Storage Used</p>
           <p className="text-3xl font-extrabold">{formatBytes(totalStorage)}</p>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
@@ -189,6 +263,59 @@ export default function SuperAdmin() {
           <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Disabled Workspaces</p>
           <p className="text-3xl font-extrabold">{workspaces.filter(w => w.is_disabled).length}</p>
         </div>
+      </div>
+
+      {/* Database size gauge -- a separate quota from the file storage bucket above */}
+      {dbSizeBytes !== null && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-slate-300 text-sm font-bold flex items-center gap-2"><Database size={16} className="text-blue-500" /> Database Storage (Postgres)</p>
+            <p className="text-slate-400 text-sm font-semibold">
+              {formatBytes(dbSizeBytes)} <span className="text-slate-600">/ {formatBytes(FREE_TIER_DB_LIMIT_BYTES)} free tier limit</span>
+            </p>
+          </div>
+          <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${(dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) > 0.85 ? 'bg-red-500' : (dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) > 0.6 ? 'bg-amber-500' : 'bg-blue-500'}`}
+              style={{ width: `${Math.min(100, (dbSizeBytes / FREE_TIER_DB_LIMIT_BYTES) * 100)}%` }}
+            />
+          </div>
+          <p className="text-slate-500 text-xs mt-2">This is your actual database (records, not photos) — separate from File Storage above. If you're on a paid Supabase plan, this limit no longer applies the same way.</p>
+        </div>
+      )}
+
+      {/* Orphaned file cleanup */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-slate-300 text-sm font-bold flex items-center gap-2"><Sparkles size={16} className="text-purple-400" /> Orphaned File Cleanup</p>
+            <p className="text-slate-500 text-xs mt-1 max-w-xl">Finds photo files still sitting in storage whose worker record was deleted (deletions made before this cleanup existed left files behind). Nothing is deleted until you confirm.</p>
+          </div>
+          {!orphanScan ? (
+            <button onClick={scanForOrphans} disabled={scanningOrphans || workspaces.length === 0} className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors shrink-0">
+              <RefreshCw size={14} className={scanningOrphans ? 'animate-spin' : ''} /> {scanningOrphans ? 'Scanning...' : 'Scan for Orphaned Files'}
+            </button>
+          ) : (
+            <button onClick={() => setOrphanScan(null)} className="text-slate-500 hover:text-slate-300 text-xs font-bold shrink-0">Dismiss</button>
+          )}
+        </div>
+
+        {orphanScan && (
+          <div className="mt-4 pt-4 border-t border-slate-800">
+            {orphanScan.files.length === 0 ? (
+              <p className="text-emerald-400 text-sm font-semibold flex items-center gap-2"><CheckCircle2 size={16} /> No orphaned files found — storage is clean.</p>
+            ) : (
+              <>
+                <p className="text-amber-400 text-sm font-semibold flex items-center gap-2 mb-3">
+                  <AlertTriangle size={16} /> Found {orphanScan.files.length} orphaned file(s) totaling {formatBytes(orphanScan.totalBytes)}
+                </p>
+                <button onClick={deleteOrphans} disabled={deletingOrphans} className="bg-red-950 hover:bg-red-900 border border-red-900 text-red-400 font-bold px-4 py-2.5 rounded-lg text-sm transition-colors disabled:opacity-50">
+                  {deletingOrphans ? 'Deleting...' : `Delete All ${orphanScan.files.length} Orphaned Files`}
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Workspaces table */}

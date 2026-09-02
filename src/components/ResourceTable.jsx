@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Eye, CheckCircle, RefreshCw, Power, Trash2, FileDown } from 'lucide-react';
+import { Eye, CheckCircle, RefreshCw, Power, Trash2, FileDown, Pencil } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
-export default function ResourceTable({ activeTab, role, companies, supervisors, employees, onToggleStatus, onApprove, onViewProfile, onHardDelete }) {
+export default function ResourceTable({ activeTab, role, companies, supervisors, employees, onToggleStatus, onApprove, onViewProfile, onHardDelete, onEditWorker }) {
   const [empType, setEmpType] = useState('Contractual'); // Defaulting to Contractual
   const [currentPage, setCurrentPage] = useState(0);
   const rowsPerPage = 10;
@@ -51,6 +51,10 @@ export default function ResourceTable({ activeTab, role, companies, supervisors,
         'Aadhar Number': w.aadhar_number || '',
         'UAN Number': w.uan_number || '',
         'ESI Number': w.esi_number || '',
+        'Bank Account Holder Name': w.bank_account_name || '',
+        'Bank Name': w.bank_name || '',
+        'IFSC Code': w.ifsc_code || '',
+        'Account Number': w.bank_account_number || '',
         'Status': isRelieved ? 'Relieved' : 'Active',
       };
     });
@@ -150,7 +154,13 @@ export default function ResourceTable({ activeTab, role, companies, supervisors,
                         )}
 
                         {role === 'admin' && (
-                          <button onClick={() => onHardDelete(worker.id, empType)} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 p-2 rounded-lg transition-colors shadow-sm ml-2" title="Delete Permanently">
+                          <button onClick={() => onEditWorker(worker, empType)} className="bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 p-2 rounded-lg transition-colors shadow-sm" title="Edit Details">
+                            <Pencil size={16} />
+                          </button>
+                        )}
+
+                        {role === 'admin' && (
+                          <button onClick={() => onHardDelete(worker, empType)} className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 p-2 rounded-lg transition-colors shadow-sm ml-2" title="Delete Permanently">
                             <Trash2 size={16} />
                           </button>
                         )}

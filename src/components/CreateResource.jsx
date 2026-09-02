@@ -2,13 +2,50 @@ import { useState, useRef } from 'react';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 
+// One photo slot: a label, an optional badge, and two explicit buttons
+// (Camera / Gallery) instead of one ambiguous button, since mobile browsers
+// handle a single file input's "guess what I want" behavior inconsistently.
+function PhotoCaptureCard({ label, optional, type, photos, fileInputRef, handleTakePhoto, handleWebFileChange, labelClass }) {
+  const hasPhoto = !!photos[type];
+  return (
+    <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
+      <div className="flex items-center justify-between mb-2">
+        <label className={`${labelClass} mb-0`}>
+          {label}{optional && <span className="text-slate-400 font-medium normal-case"> (optional)</span>}
+        </label>
+        {hasPhoto && <span className="text-emerald-600 text-xs font-bold">✅ Saved</span>}
+      </div>
+      <input type="file" accept="image/*" capture="environment" ref={(el) => { fileInputRef.current[`${type}_camera`] = el; }} onChange={handleWebFileChange} className="hidden" />
+      <input type="file" accept="image/*" ref={(el) => { fileInputRef.current[`${type}_gallery`] = el; }} onChange={handleWebFileChange} className="hidden" />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => handleTakePhoto(type, 'camera')}
+          className={`flex-1 py-3 px-2 rounded-xl font-bold text-xs transition-all border shadow-sm ${hasPhoto ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
+        >
+          📷 Camera
+        </button>
+        <button
+          type="button"
+          onClick={() => handleTakePhoto(type, 'gallery')}
+          className={`flex-1 py-3 px-2 rounded-xl font-bold text-xs transition-all border shadow-sm ${hasPhoto ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
+        >
+          🖼️ Gallery
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CreateResource({ role, companies, supervisorData, onAddWorker }) {
   const [empType, setEmpType] = useState(role === 'supervisor' ? 'Contractual' : 'Permanent');
   
   const initialFormData = {
     companyId: '', plantId: '', name: '', fatherName: '', mobile: '', aadhar: '', dob: '', gender: 'Male',
     department: '', designation: '', joiningDate: '', experience: '', previousCompany: '', salary: '',
-    idProofType: 'Aadhaar', operatorTrial: false
+    idProofType: 'Aadhaar', operatorTrial: false,
+    esiNumber: '', uanNumber: '',
+    bankAccountName: '', bankName: '', ifscCode: '', bankAccountNumber: ''
   };
 
   const [formData, setFormData] = useState(initialFormData);
@@ -16,24 +53,25 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
   // Store the actual file data from the native camera
   const [photos, setPhotos] = useState({ profile: null, idFront: null, idBack: null, passbook: null });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // Used only on the web fallback path below, to trigger a hidden file input.
-  const fileInputRef = useRef({ profile: null, idFront: null, idBack: null, passbook: null });
+  // Used only on the web fallback path below, to trigger hidden file inputs.
+  // Keyed dynamically as "<type>_camera" / "<type>_gallery".
+  const fileInputRef = useRef({});
   const [pendingFileType, setPendingFileType] = useState(null);
 
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
 
-  // This function triggers the native popup asking "Camera or Gallery?" on
-  // the actual Android app. In a browser, Capacitor's Camera plugin falls
-  // back to a bundled camera UI (@ionic/pwa-elements) that depends on the
-  // ImageCapture Web API -- support for that is inconsistent across mobile
-  // browsers, and where it's missing this crashes on the shutter click. So
-  // on the web we skip that fallback entirely and just use a plain file
-  // input instead, which reliably opens the phone's camera/gallery picker
-  // in every mobile browser without depending on that shaky API.
-  const handleTakePhoto = async (type) => {
+  // Different mobile browsers handle a plain file input inconsistently --
+  // with capture="environment" it forces the camera with no gallery option,
+  // and without it, modern Chrome's "Photo Picker" often shows gallery only
+  // with no visible camera shortcut. Rather than depend on the browser to
+  // guess right, we give two explicit, always-visible buttons instead --
+  // one wired to a camera-forcing input, one to a gallery-only input. Same
+  // idea on native: CameraSource.Camera / CameraSource.Photos explicitly,
+  // instead of relying on the OS's own Prompt action sheet.
+  const handleTakePhoto = async (type, mode) => {
     if (!Capacitor.isNativePlatform()) {
       setPendingFileType(type);
-      fileInputRef.current[type]?.click();
+      fileInputRef.current[`${type}_${mode}`]?.click();
       return;
     }
 
@@ -42,7 +80,7 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
         quality: 80,
         allowEditing: false,
         resultType: CameraResultType.Uri,
-        source: CameraSource.Prompt, // <-- This is the magic command for the selection menu!
+        source: mode === 'camera' ? CameraSource.Camera : CameraSource.Photos,
       });
 
       // Convert the native phone image into a standard file so your Supabase upload still works perfectly
@@ -56,7 +94,7 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
     }
   };
 
-  // Handles the file chosen via the plain <input type="file"> on web.
+  // Handles the file chosen via either plain <input type="file"> on web.
   const handleWebFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file && pendingFileType) {
@@ -184,75 +222,22 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
           )}
 
           <div className="col-span-1 md:col-span-3 grid grid-cols-1 md:grid-cols-4 gap-6 mt-4">
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
-              <label className={labelClass}>Aadhaar - Front Side *</label>
-              <input
-                type="file"
-                accept="image/*"
-                ref={(el) => { fileInputRef.current.idFront = el; }}
-                onChange={handleWebFileChange}
-                className="hidden"
-              />
-              <button 
-                type="button" 
-                onClick={() => handleTakePhoto('idFront')}
-                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.idFront ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-              >
-                {photos.idFront ? '✅ Front Saved (Tap to change)' : '📸 Camera or Gallery'}
-              </button>
-            </div>
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
-              <label className={labelClass}>Aadhaar - Back Side *</label>
-              <input
-                type="file"
-                accept="image/*"
-                ref={(el) => { fileInputRef.current.idBack = el; }}
-                onChange={handleWebFileChange}
-                className="hidden"
-              />
-              <button 
-                type="button" 
-                onClick={() => handleTakePhoto('idBack')}
-                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.idBack ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-              >
-                {photos.idBack ? '✅ Back Saved (Tap to change)' : '📸 Camera or Gallery'}
-              </button>
-            </div>
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
-              <label className={labelClass}>Upload Profile Photo *</label>
-              <input
-                type="file"
-                accept="image/*"
-                ref={(el) => { fileInputRef.current.profile = el; }}
-                onChange={handleWebFileChange}
-                className="hidden"
-              />
-              <button 
-                type="button" 
-                onClick={() => handleTakePhoto('profile')}
-                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.profile ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-              >
-                {photos.profile ? '✅ Profile Saved (Tap to change)' : '📸 Camera or Gallery'}
-              </button>
-            </div>
-            <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl flex flex-col justify-center">
-              <label className={labelClass}>Passbook Photo <span className="text-slate-400 font-medium normal-case">(optional)</span></label>
-              <input
-                type="file"
-                accept="image/*"
-                ref={(el) => { fileInputRef.current.passbook = el; }}
-                onChange={handleWebFileChange}
-                className="hidden"
-              />
-              <button 
-                type="button" 
-                onClick={() => handleTakePhoto('passbook')}
-                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all border shadow-sm ${photos.passbook ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}`}
-              >
-                {photos.passbook ? '✅ Passbook Saved (Tap to change)' : '📸 Camera or Gallery'}
-              </button>
-            </div>
+            <PhotoCaptureCard label="Aadhaar - Front Side *" type="idFront" photos={photos} fileInputRef={fileInputRef} handleTakePhoto={handleTakePhoto} handleWebFileChange={handleWebFileChange} labelClass={labelClass} />
+            <PhotoCaptureCard label="Aadhaar - Back Side *" type="idBack" photos={photos} fileInputRef={fileInputRef} handleTakePhoto={handleTakePhoto} handleWebFileChange={handleWebFileChange} labelClass={labelClass} />
+            <PhotoCaptureCard label="Upload Profile Photo *" type="profile" photos={photos} fileInputRef={fileInputRef} handleTakePhoto={handleTakePhoto} handleWebFileChange={handleWebFileChange} labelClass={labelClass} />
+            <PhotoCaptureCard label="Passbook Photo" optional type="passbook" photos={photos} fileInputRef={fileInputRef} handleTakePhoto={handleTakePhoto} handleWebFileChange={handleWebFileChange} labelClass={labelClass} />
           </div>
+        </div>
+
+        <h3 className={sectionHeaderClass}>5. Statutory & Bank Details <span className="text-slate-400 normal-case font-medium tracking-normal">(optional)</span></h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div><label className={labelClass}>ESI Number</label><input type="text" value={formData.esiNumber} onChange={e => setFormData({...formData, esiNumber: e.target.value})} className={inputClass} /></div>
+          <div><label className={labelClass}>UAN / PF Number</label><input type="text" value={formData.uanNumber} onChange={e => setFormData({...formData, uanNumber: e.target.value})} className={inputClass} /></div>
+          <div className="hidden md:block" />
+          <div><label className={labelClass}>Bank Account Holder Name</label><input type="text" value={formData.bankAccountName} onChange={e => setFormData({...formData, bankAccountName: e.target.value})} placeholder="As per bank records" className={inputClass} /></div>
+          <div><label className={labelClass}>Bank Name</label><input type="text" value={formData.bankName} onChange={e => setFormData({...formData, bankName: e.target.value})} className={inputClass} /></div>
+          <div><label className={labelClass}>IFSC Code</label><input type="text" value={formData.ifscCode} onChange={e => setFormData({...formData, ifscCode: e.target.value.toUpperCase()})} maxLength={11} placeholder="e.g. SBIN0001234" className={inputClass} /></div>
+          <div><label className={labelClass}>Account Number</label><input type="text" value={formData.bankAccountNumber} onChange={e => setFormData({...formData, bankAccountNumber: e.target.value})} className={inputClass} /></div>
         </div>
 
         <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all mt-8 text-lg shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2">

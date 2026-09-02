@@ -9,6 +9,7 @@ import AdminOverview from './components/AdminOverview';
 import ResourceTable from './components/ResourceTable';
 import CreateResource from './components/CreateResource';
 import AddInfrastructure from './components/AddInfrastructure';
+import EditResource from './components/EditResource';
 import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu, Download } from 'lucide-react';
 
 export default function Dashboard({ role = 'admin', supervisorData = null, onLogout }) {
@@ -23,6 +24,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 
   // Modals & Menus State
   const [viewingWorker, setViewingWorker] = useState(null);
+  const [editingWorker, setEditingWorker] = useState(null); // { worker, empType } or null
   const [securePhotos, setSecurePhotos] = useState({ profile: null, idFront: null, idBack: null, passbook: null });
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [showCredentialsModal, setShowCredentialsModal] = useState(false);
@@ -321,7 +323,10 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       previous_company: formData.previousCompany, monthly_salary: parseFloat(formData.salary),
       id_proof_type: formData.idProofType, aadhar_number: formData.aadhar,
       profile_photo_url: profileUrl, aadhar_photo_url: aadharFrontUrl, aadhar_back_photo_url: aadharBackUrl,
-      passbook_photo_url: passbookUrl, is_active: true
+      passbook_photo_url: passbookUrl, is_active: true,
+      esi_number: formData.esiNumber || null, uan_number: formData.uanNumber || null,
+      bank_account_name: formData.bankAccountName || null, bank_name: formData.bankName || null,
+      ifsc_code: formData.ifscCode || null, bank_account_number: formData.bankAccountNumber || null
     };
 
     if (formData.employmentType === 'Contractual') {
@@ -434,14 +439,93 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     }
   };
 
-  const handleHardDelete = async (workerId, type) => {
+  const handleHardDelete = async (worker, type) => {
     if (!window.confirm("WARNING: This will permanently delete this record from the database. Continue?")) return;
     const table = type === 'Permanent' ? 'supervisors' : 'employees';
+    const workerId = worker.id;
+
+    // Clean up storage FIRST. If this were done after the row delete and
+    // failed partway, we'd have no record left to retry from -- doing it
+    // first means a storage failure just leaves the row intact for another
+    // attempt, rather than silently leaking files forever (which is exactly
+    // what was happening before this fix).
+    const filePaths = [
+      worker.profile_photo_url,
+      worker.aadhar_photo_url,
+      worker.aadhar_back_photo_url,
+      worker.passbook_photo_url,
+    ].filter(Boolean);
+
+    if (filePaths.length > 0) {
+      const { error: storageError } = await supabase.storage.from('worker_docs').remove(filePaths);
+      if (storageError) {
+        alert(`Could not delete this worker's files from storage: ${storageError.message}\n\nThe record was NOT deleted, so you can try again.`);
+        return;
+      }
+    }
+
     const { error } = await supabase.from(table).delete().eq('id', workerId);
     if (error) { alert("Delete failed: " + error.message); return; }
     
     if (type === 'Permanent') setSupervisors(supervisors.filter(s => s.id !== workerId));
     else setEmployees(employees.filter(e => e.id !== workerId));
+  };
+
+  // Lets an admin change any field on an existing worker, including moving
+  // them to a different company/plant, at any time -- not just at creation.
+  const handleSaveWorkerEdit = async (worker, type, formData, newPhotos) => {
+    const table = type === 'Permanent' ? 'supervisors' : 'employees';
+    const company = companies.find(c => c.id === formData.companyId);
+    const plant = company?.plants?.find(p => p.id === formData.plantId);
+    if (!company || !plant) throw new Error('Please select a valid company and plant.');
+
+    // Only touch storage for slots where a new photo was actually picked --
+    // everything else keeps its existing file untouched. When a slot IS
+    // replaced, the old file is deleted afterwards so it doesn't become
+    // another orphan sitting in storage forever.
+    const photoColumnMap = {
+      profile: 'profile_photo_url',
+      idFront: 'aadhar_photo_url',
+      idBack: 'aadhar_back_photo_url',
+      passbook: 'passbook_photo_url',
+    };
+    const photoUpdates = {};
+    const oldPathsToDelete = [];
+
+    for (const [key, column] of Object.entries(photoColumnMap)) {
+      const newFile = newPhotos[key];
+      if (!newFile) continue;
+      const newPath = await uploadImage(newFile, `${plant.plant_code}_${key}`);
+      if (newPath) {
+        photoUpdates[column] = newPath;
+        if (worker[column] && worker[column] !== newPath) oldPathsToDelete.push(worker[column]);
+      }
+    }
+
+    const updatePayload = {
+      company_id: company.id, plant_id: plant.id,
+      name: formData.name, father_name: formData.fatherName, phone: formData.mobile,
+      dob: formData.dob, gender: formData.gender, department: formData.department,
+      post: formData.designation, joining_date: formData.joiningDate, experience: formData.experience,
+      previous_company: formData.previousCompany, monthly_salary: parseFloat(formData.salary) || 0,
+      id_proof_type: formData.idProofType, aadhar_number: formData.aadhar,
+      esi_number: formData.esiNumber || null, uan_number: formData.uanNumber || null,
+      bank_account_name: formData.bankAccountName || null, bank_name: formData.bankName || null,
+      ifsc_code: formData.ifscCode || null, bank_account_number: formData.bankAccountNumber || null,
+      ...photoUpdates,
+    };
+
+    const { data, error } = await supabase.from(table).update(updatePayload).eq('id', worker.id).select();
+    if (error) throw error;
+
+    if (oldPathsToDelete.length > 0) {
+      const { error: cleanupError } = await supabase.storage.from('worker_docs').remove(oldPathsToDelete);
+      if (cleanupError) console.error('Old photo cleanup failed (non-fatal):', cleanupError);
+    }
+
+    const updated = data[0];
+    if (type === 'Permanent') setSupervisors(supervisors.map(s => s.id === worker.id ? { ...s, ...updated } : s));
+    else setEmployees(employees.map(e => e.id === worker.id ? { ...e, ...updated } : e));
   };
 
   const handleDeleteCompany = async (company) => {
@@ -787,7 +871,7 @@ return (
           {activeTab === 'dashboard' && role === 'admin' && <AdminOverview companies={companies} supervisors={supervisors} employees={employees} />}
 
           {['existing', 'relieved', 'pending'].includes(activeTab) && (
-            <ResourceTable activeTab={activeTab} role={role} companies={companies} supervisors={supervisors} employees={employees} onToggleStatus={handleToggleStatus} onApprove={handleApprove} onViewProfile={handleViewProfile} onHardDelete={handleHardDelete} />
+            <ResourceTable activeTab={activeTab} role={role} companies={companies} supervisors={supervisors} employees={employees} onToggleStatus={handleToggleStatus} onApprove={handleApprove} onViewProfile={handleViewProfile} onHardDelete={handleHardDelete} onEditWorker={(worker, empType) => setEditingWorker({ worker, empType })} />
           )}
 
           {activeTab === 'create' && <CreateResource role={role} companies={companies} supervisorData={supervisorData} onAddWorker={handleAddWorker} />}
@@ -1126,6 +1210,16 @@ return (
               </div>
             </div>
           </div>
+        )}
+
+        {editingWorker && (
+          <EditResource
+            worker={editingWorker.worker}
+            empType={editingWorker.empType}
+            companies={companies}
+            onSave={handleSaveWorkerEdit}
+            onClose={() => setEditingWorker(null)}
+          />
         )}
       </main>
     </div>
