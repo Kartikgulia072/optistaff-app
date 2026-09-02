@@ -274,10 +274,12 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       }
 
       // Same idea as the supervisor check above -- catches a workspace that
-      // got disabled while this admin was already signed in.
+      // got disabled while this admin was already signed in. Don't sign out
+      // automatically here -- that would trigger App.jsx's auth listener
+      // and swap this screen away before the person can even read it. The
+      // actual sign-out happens only when they tap the button below.
       if (workspace.is_disabled) {
         setServiceRestricted(true);
-        await supabase.auth.signOut();
         return;
       }
 
@@ -846,15 +848,15 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
           <div className="w-16 h-16 bg-red-950 border border-red-900 rounded-full flex items-center justify-center mx-auto mb-5">
             <Shield size={28} className="text-red-500" />
           </div>
-          <h2 className="text-xl font-extrabold text-white mb-2">Service Restricted</h2>
+          <h2 className="text-xl font-extrabold text-white mb-2">Your Plan Has Expired</h2>
           <p className="text-slate-400 text-sm font-medium mb-6">
-            This workspace has been disabled by the administrator. You no longer have access to OptiStaff. Please contact your workspace administrator for assistance.
+            Your data is safe for the next 15 days. Please renew your subscription before then to continue using OptiStaff — after 15 days, your data will be permanently deleted.
           </p>
           <button
             onClick={onLogout}
             className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition-colors"
           >
-            Log Out
+            OK
           </button>
         </div>
       </div>
