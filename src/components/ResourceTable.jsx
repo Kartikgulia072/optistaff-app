@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Eye, CheckCircle, RefreshCw, Power, Trash2, FileDown, Pencil } from 'lucide-react';
+import { Eye, CheckCircle, RefreshCw, Power, Trash2, FileDown, Pencil, FileText } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
-export default function ResourceTable({ activeTab, role, companies, supervisors, employees, onToggleStatus, onApprove, onViewProfile, onHardDelete, onEditWorker }) {
+export default function ResourceTable({ activeTab, role, companies, supervisors, employees, onToggleStatus, onApprove, onViewProfile, onHardDelete, onEditWorker, onDownloadPDF }) {
   const [empType, setEmpType] = useState('Contractual'); // Defaulting to Contractual
   const [currentPage, setCurrentPage] = useState(0);
   const rowsPerPage = 10;
@@ -142,6 +142,12 @@ export default function ResourceTable({ activeTab, role, companies, supervisors,
                         <button onClick={() => onViewProfile(worker, empType)} className="bg-slate-100 hover:bg-slate-200 text-slate-700 p-2 rounded-lg transition-colors border border-slate-200 shadow-sm" title="View Profile">
                           <Eye size={16} />
                         </button>
+
+                        {!isPending && (
+                          <button onClick={() => onDownloadPDF(worker, empType)} className="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 p-2 rounded-lg transition-colors shadow-sm" title="Download PDF">
+                            <FileText size={16} />
+                          </button>
+                        )}
                         
                         {isPending && role === 'admin' ? (
                           <button onClick={() => onApprove(worker.id, empType, worker.plant_id)} className="bg-emerald-100 hover:bg-emerald-200 text-emerald-700 border border-emerald-200 p-2 rounded-lg transition-colors shadow-sm" title={hasId ? 'Approve Request' : 'Approve & Generate ID'}>

@@ -3,6 +3,8 @@ import { supabase } from './supabaseClient';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { Capacitor } from '@capacitor/core';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 import Sidebar from './components/Sidebar';
 import AdminOverview from './components/AdminOverview';
@@ -300,11 +302,58 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     }
   };
 
+  // Downscales and re-compresses a photo before it ever reaches storage.
+  // Phone cameras routinely produce 4000px, 5-8MB images -- for a document
+  // photo shown at a few hundred pixels in the UI, that's mostly wasted
+  // storage. Capped to 1600px on the long edge and re-encoded as JPEG at
+  // 75% quality, which keeps ID documents perfectly legible while cutting
+  // typical file size by 80-90%. Falls back to the original file untouched
+  // if compression fails for any reason, so a bad image never blocks
+  // submission.
+  const compressImage = (file, maxDimension = 1600, quality = 0.75) => {
+    return new Promise((resolve) => {
+      if (!file.type.startsWith('image/')) { resolve(file); return; }
+
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+
+        let { width, height } = img;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) { height = Math.round((height / width) * maxDimension); width = maxDimension; }
+          else { width = Math.round((width / height) * maxDimension); height = maxDimension; }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        canvas.toBlob((blob) => {
+          if (!blob) { resolve(file); return; }
+          // Only use the compressed version if it's actually smaller --
+          // an already-small or already-compressed image can occasionally
+          // come out larger after re-encoding, so this guards against that.
+          if (blob.size >= file.size) { resolve(file); return; }
+          const compressedFile = new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' });
+          resolve(compressedFile);
+        }, 'image/jpeg', quality);
+      };
+
+      img.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(file); };
+      img.src = objectUrl;
+    });
+  };
+
   const uploadImage = async (file, prefix) => {
     if (!file) return null;
-    const fileExt = file.name.split('.').pop();
+    const compressed = await compressImage(file);
+    const fileExt = compressed.name.split('.').pop();
     const filePath = `${workspaceId}/${prefix}_${Date.now()}.${fileExt}`;
-    const { error } = await supabase.storage.from('worker_docs').upload(filePath, file);
+    const { error } = await supabase.storage.from('worker_docs').upload(filePath, compressed);
     if (error) {
       console.error('Photo upload failed:', error);
       alert(`Photo upload failed: ${error.message}\n\nThe resource will NOT be saved with this photo. Check the worker_docs storage bucket and its policies in Supabase.`);
@@ -755,6 +804,178 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     }
   };
 
+  // jsPDF needs images as data URLs, not remote URLs -- this fetches a
+  // (possibly signed, possibly cross-origin) URL and converts it. Returns
+  // null on any failure so the PDF can still be built with a placeholder
+  // instead of crashing the whole export over one missing/broken photo.
+  const urlToDataURL = async (url) => {
+    if (!url) return null;
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      console.error('Failed to load image for PDF:', err);
+      return null;
+    }
+  };
+
+  // Generates a two-page PDF: page 1 is the filled-in details form
+  // (everything from the resource form except the bank/account section,
+  // with the profile photo pasted passport-style at the top), page 2 is the
+  // Aadhaar front and back images.
+  const handleDownloadPDF = async (worker, type) => {
+    const company = companies.find(c => c.id === worker.company_id);
+    const plant = company?.plants?.find(p => p.id === worker.plant_id);
+
+    // Resolve signed URLs then convert to data URLs the PDF can embed.
+    const [profilePhotoUrl, aadharFrontUrl, aadharBackUrl] = await Promise.all(
+      [worker.profile_photo_url, worker.aadhar_photo_url, worker.aadhar_back_photo_url].map(async (path) => {
+        if (!path) return null;
+        const { data } = await supabase.storage.from('worker_docs').createSignedUrl(path, 300);
+        return data?.signedUrl ? urlToDataURL(data.signedUrl) : null;
+      })
+    );
+
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 15;
+
+    // --- Page 1: Details form ---
+    doc.setFontSize(16);
+    doc.setFont(undefined, 'bold');
+    doc.text('Employee / Worker Details Form', margin, 20);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`${company?.company_name || ''}${plant ? ' - ' + plant.plant_name : ''}`, margin, 27);
+    doc.setDrawColor(200);
+    doc.line(margin, 31, pageWidth - margin, 31);
+
+    // Passport-style photo, top-right corner (standard ~35mm x 45mm)
+    const photoW = 32, photoH = 40;
+    const photoX = pageWidth - margin - photoW;
+    const photoY = 14;
+    if (profilePhotoUrl) {
+      try { doc.addImage(profilePhotoUrl, 'JPEG', photoX, photoY, photoW, photoH); } catch { /* skip if format unsupported */ }
+    }
+    doc.setDrawColor(150);
+    doc.rect(photoX, photoY, photoW, photoH);
+
+    const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+
+    autoTable(doc, {
+      startY: 38,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 2.2 },
+      headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+      margin: { right: margin + photoW + 4 },
+      head: [['Placement', '']],
+      body: [
+        ['Company', company?.company_name || '-'],
+        ['Plant Unit', plant?.plant_name || '-'],
+      ],
+    });
+
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 4,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 2.2 },
+      headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+      head: [['Basic Details', '']],
+      body: [
+        ['Full Name', worker.name || '-'],
+        ["Father's Name", worker.father_name || '-'],
+        ['Mobile Number', worker.phone || '-'],
+        ['Date of Birth', formatDate(worker.dob)],
+        ['Gender', worker.gender || '-'],
+        ['ID Proof Type', worker.id_proof_type || '-'],
+        ['Aadhaar / ID Number', worker.aadhar_number || '-'],
+      ],
+    });
+
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 4,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 2.2 },
+      headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+      head: [['Employment Details', '']],
+      body: [
+        ['Employment Type', type],
+        ['Department', worker.department || '-'],
+        ['Designation', worker.post || '-'],
+        ['Joining Date', formatDate(worker.joining_date)],
+        ['Experience', worker.experience || '-'],
+        ['Previous Company', worker.previous_company || '-'],
+        ['Monthly Salary', worker.monthly_salary ? `Rs. ${worker.monthly_salary}` : '-'],
+      ],
+    });
+
+    // Bank/account details are deliberately excluded from this form.
+    autoTable(doc, {
+      startY: doc.lastAutoTable.finalY + 4,
+      theme: 'grid',
+      styles: { fontSize: 9, cellPadding: 2.2 },
+      headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
+      head: [['Statutory Details', '']],
+      body: [
+        ['ESI Number', worker.esi_number || '-'],
+        ['UAN / PF Number', worker.uan_number || '-'],
+      ],
+    });
+
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Generated on ${new Date().toLocaleDateString('en-GB')} via OptiStaff`, margin, doc.internal.pageSize.getHeight() - 10);
+
+    // --- Page 2: Aadhaar front and back ---
+    doc.addPage();
+    doc.setTextColor(0);
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text('Aadhaar Card', margin, 20);
+    doc.setDrawColor(200);
+    doc.line(margin, 24, pageWidth - margin, 24);
+
+    const imgW = pageWidth - margin * 2;
+    const imgH = 85;
+
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'bold');
+    doc.text('Front Side', margin, 34);
+    doc.setDrawColor(150);
+    doc.rect(margin, 37, imgW, imgH);
+    if (aadharFrontUrl) {
+      try { doc.addImage(aadharFrontUrl, 'JPEG', margin, 37, imgW, imgH, undefined, 'FAST'); } catch { /* leave empty box */ }
+    } else {
+      doc.setFont(undefined, 'normal');
+      doc.setTextColor(180);
+      doc.text('Image not available', pageWidth / 2, 37 + imgH / 2, { align: 'center' });
+      doc.setTextColor(0);
+    }
+
+    const backY = 37 + imgH + 12;
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'bold');
+    doc.text('Back Side', margin, backY - 3);
+    doc.setDrawColor(150);
+    doc.rect(margin, backY, imgW, imgH);
+    if (aadharBackUrl) {
+      try { doc.addImage(aadharBackUrl, 'JPEG', margin, backY, imgW, imgH, undefined, 'FAST'); } catch { /* leave empty box */ }
+    } else {
+      doc.setFont(undefined, 'normal');
+      doc.setTextColor(180);
+      doc.text('Image not available', pageWidth / 2, backY + imgH / 2, { align: 'center' });
+      doc.setTextColor(0);
+    }
+
+    doc.save(`${worker.name || 'worker'}_details.pdf`);
+  };
+
   const handleSaveCredentials = async (e) => {
     e.preventDefault(); setLoading(true);
     const { data, error } = await supabase.from('supervisors').update({ username: targetSupervisor.supervisor_code.toLowerCase(), password: credentials.password }).eq('id', targetSupervisor.id).select();
@@ -913,7 +1134,7 @@ return (
           {activeTab === 'dashboard' && role === 'admin' && <AdminOverview companies={companies} supervisors={supervisors} employees={employees} />}
 
           {['existing', 'relieved', 'pending'].includes(activeTab) && (
-            <ResourceTable activeTab={activeTab} role={role} companies={companies} supervisors={supervisors} employees={employees} onToggleStatus={handleToggleStatus} onApprove={handleApprove} onViewProfile={handleViewProfile} onHardDelete={handleHardDelete} onEditWorker={(worker, empType) => setEditingWorker({ worker, empType })} />
+            <ResourceTable activeTab={activeTab} role={role} companies={companies} supervisors={supervisors} employees={employees} onToggleStatus={handleToggleStatus} onApprove={handleApprove} onViewProfile={handleViewProfile} onHardDelete={handleHardDelete} onEditWorker={(worker, empType) => setEditingWorker({ worker, empType })} onDownloadPDF={handleDownloadPDF} />
           )}
 
           {activeTab === 'create' && <CreateResource role={role} companies={companies} supervisorData={supervisorData} onAddWorker={handleAddWorker} />}
