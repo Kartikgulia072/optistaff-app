@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
+import { Building2 } from 'lucide-react';
 
 // One photo slot: a label, an optional badge, and two explicit buttons
 // (Camera / Gallery) instead of one ambiguous button, since mobile browsers
@@ -60,6 +61,23 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
 
   const availablePlants = companies.find(c => c.id === formData.companyId)?.plants || [];
 
+  // Permanent hires (Supervisors) belong to the admin's own agency, not a
+  // client site -- that company is auto-created at signup and flagged
+  // is_own_company. Contractual workers still pick from client companies
+  // via the normal dropdown.
+  const ownCompany = companies.find(c => c.is_own_company);
+  const clientCompanies = companies.filter(c => !c.is_own_company);
+  const ownPlant = ownCompany?.plants?.[0];
+
+  // Only needs to clear any leftover client-company selection when switching
+  // away from Permanent -- the actual company/plant used for a Permanent
+  // hire is resolved fresh at submit time below, so there's nothing to
+  // pre-sync here regardless of mount timing or when `companies` finishes loading.
+  const handleEmpTypeChange = (newType) => {
+    setEmpType(newType);
+    setFormData(prev => ({ ...prev, companyId: '', plantId: '' }));
+  };
+
   // Different mobile browsers handle a plain file input inconsistently --
   // with capture="environment" it forces the camera with no gallery option,
   // and without it, modern Chrome's "Photo Picker" often shows gallery only
@@ -107,13 +125,20 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (role === 'supervisor' && !formData.department) return alert("Please select a department.");
+    if (empType === 'Permanent' && (!ownCompany || !ownPlant)) return alert("Set up your company details in \"Manage Profile\" (in the sidebar) before adding Permanent staff.");
 
     // Ensure all three photos are selected before submitting
     if (!photos.profile || !photos.idFront || !photos.idBack) return alert("Please provide the Profile Photo and both sides of the Aadhaar card.");
 
+    // A Permanent hire always belongs to the admin's own agency, resolved
+    // fresh here rather than relying on form state being pre-filled.
+    const submissionData = empType === 'Permanent'
+      ? { ...formData, companyId: ownCompany.id, plantId: ownPlant.id }
+      : formData;
+
     setIsSubmitting(true);
     try {
-      await onAddWorker({ ...formData, employmentType: empType }, photos.profile, photos.idFront, photos.idBack, photos.passbook);
+      await onAddWorker({ ...submissionData, employmentType: empType }, photos.profile, photos.idFront, photos.idBack, photos.passbook);
       // Clear the form back to a blank state only after the submission succeeded
       setFormData(initialFormData);
       setPhotos({ profile: null, idFront: null, idBack: null, passbook: null });
@@ -135,11 +160,11 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
     <div className="max-w-4xl pb-10 animate-in fade-in duration-300">
       <div className="flex gap-3 mb-8 bg-slate-200/50 p-1.5 rounded-xl w-fit">
         {role === 'admin' && (
-          <button type="button" onClick={() => setEmpType('Permanent')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Permanent' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
+          <button type="button" onClick={() => handleEmpTypeChange('Permanent')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Permanent' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
             Permanent
           </button>
         )}
-        <button type="button" onClick={() => setEmpType('Contractual')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Contractual' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
+        <button type="button" onClick={() => handleEmpTypeChange('Contractual')} className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-sm ${empType === 'Contractual' ? 'bg-white text-blue-700 border border-slate-200' : 'bg-transparent text-slate-500 hover:text-slate-800 border border-transparent shadow-none'}`}>
           Contractual
         </button>
       </div>
@@ -147,22 +172,36 @@ export default function CreateResource({ role, companies, supervisorData, onAddW
       <form onSubmit={handleSubmit} className="space-y-6 bg-white p-8 rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200">
         
         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-200 pb-2 mb-5">1. Placement</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label className={labelClass}>Company *</label>
-            <select required value={formData.companyId} onChange={e => setFormData({...formData, companyId: e.target.value, plantId: ''})} className={inputClass}>
-              <option value="" disabled>Select...</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
-            </select>
+        {empType === 'Permanent' ? (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex items-center gap-3">
+            <Building2 size={20} className="text-blue-700 shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-blue-900">
+                {ownCompany ? `This Supervisor will be added under ${ownCompany.company_name}` : 'Your company details are not set up yet'}
+              </p>
+              <p className="text-xs font-medium text-blue-700/70">
+                {ownCompany ? 'Permanent staff always belong to your own agency, not a client company.' : 'Set up your company details in "Manage Profile" (in the sidebar) first.'}
+              </p>
+            </div>
           </div>
-          <div>
-            <label className={labelClass}>Plant Unit *</label>
-            <select required value={formData.plantId} onChange={e => setFormData({...formData, plantId: e.target.value})} disabled={!formData.companyId} className={inputClass}>
-              <option value="" disabled>Select...</option>
-              {availablePlants.map(p => <option key={p.id} value={p.id}>{p.plant_name}</option>)}
-            </select>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className={labelClass}>Company *</label>
+              <select required value={formData.companyId} onChange={e => setFormData({...formData, companyId: e.target.value, plantId: ''})} className={inputClass}>
+                <option value="" disabled>Select...</option>
+                {clientCompanies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Plant Unit *</label>
+              <select required value={formData.plantId} onChange={e => setFormData({...formData, plantId: e.target.value})} disabled={!formData.companyId} className={inputClass}>
+                <option value="" disabled>Select...</option>
+                {availablePlants.map(p => <option key={p.id} value={p.id}>{p.plant_name}</option>)}
+              </select>
+            </div>
           </div>
-        </div>
+        )}
 
         <h3 className={sectionHeaderClass}>2. Basic Details</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

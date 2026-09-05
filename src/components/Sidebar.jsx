@@ -1,6 +1,23 @@
-import { LayoutGrid, Users, Clock, Archive, UserPlus, Key, Building2, X } from 'lucide-react';
+import { useRef } from 'react';
+import { LayoutGrid, Users, Clock, Archive, UserPlus, Key, Building2, X, FileText } from 'lucide-react';
 
-export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, setIsMobileOpen }) {
+export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, setIsMobileOpen, ownCompanyName }) {
+  // Hidden debug console: tap the logo 10 times within 2 seconds to load it.
+  // Not visible or hinted at anywhere in the UI on purpose.
+  const tapCountRef = useRef(0);
+  const tapTimerRef = useRef(null);
+
+  const handleLogoTap = () => {
+    tapCountRef.current += 1;
+    if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+    tapTimerRef.current = setTimeout(() => { tapCountRef.current = 0; }, 2000);
+
+    if (tapCountRef.current >= 10) {
+      tapCountRef.current = 0;
+      import('eruda').then((mod) => mod.default.init());
+    }
+  };
+
   const getNavClass = (tabName) => {
     const isActive = activeTab === tabName;
     return `flex items-center gap-3 px-6 py-3.5 text-[13px] font-bold uppercase tracking-wider border-b border-blue-800/50 cursor-pointer transition-all ${
@@ -26,9 +43,12 @@ export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, s
       <aside className={`fixed md:static inset-y-0 left-0 z-50 w-64 bg-blue-900 border-r border-blue-950 flex flex-col h-screen shrink-0 shadow-2xl md:shadow-xl transition-transform duration-300 ease-in-out ${isMobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         
         <div className="p-5 md:p-6 flex items-center justify-between border-b border-blue-800 shrink-0">
-          <div className="flex items-center gap-3">
-            <img src="/favicon.png" alt="OptiStaff" className="w-9 h-9 rounded-lg shadow-md shadow-black/10" />
-            <span className="text-2xl font-extrabold text-white tracking-tight">OptiStaff</span>
+          <div className="flex items-center gap-3 min-w-0">
+            <img src="/favicon.png" alt="OptiStaff" onClick={handleLogoTap} className="w-9 h-9 rounded-lg shadow-md shadow-black/10 select-none shrink-0" />
+            <div className="min-w-0">
+              <span className="text-2xl font-extrabold text-white tracking-tight block leading-none">OptiStaff</span>
+              {ownCompanyName && <span className="text-[11px] font-semibold text-blue-300 truncate block mt-1">{ownCompanyName}</span>}
+            </div>
           </div>
           {/* Mobile Close Button */}
           <button onClick={() => setIsMobileOpen(false)} className="md:hidden text-blue-200 hover:text-white p-1">
@@ -71,6 +91,18 @@ export default function Sidebar({ role, activeTab, setActiveTab, isMobileOpen, s
           {role === 'admin' && (
             <div onClick={() => handleNavClick('manage')} className={getNavClass('manage')}>
               <Key size={18} /> Manage access
+            </div>
+          )}
+
+          {role === 'admin' && (
+            <div onClick={() => handleNavClick('pdfFormat')} className={getNavClass('pdfFormat')}>
+              <FileText size={18} /> PDF Format
+            </div>
+          )}
+
+          {role === 'admin' && (
+            <div onClick={() => handleNavClick('manageProfile')} className={getNavClass('manageProfile')}>
+              <Building2 size={18} /> Manage Profile
             </div>
           )}
         </nav>

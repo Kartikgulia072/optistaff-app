@@ -7,6 +7,10 @@ export default function AddInfrastructure({
   handleDeleteCompany, handleDeletePlant,
   loading 
 }) {
+  // Your own company (created automatically at signup) is managed
+  // separately and doesn't belong in this client-company list at all.
+  const clientCompanies = companies.filter(c => !c.is_own_company);
+
   const inputClass = "w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-900 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all text-sm shadow-sm";
   const labelClass = "block text-slate-600 text-xs font-bold uppercase tracking-wider mb-2";
 
@@ -55,7 +59,7 @@ export default function AddInfrastructure({
               <label className={labelClass}>Parent Company</label>
               <select required value={newPlant.companyId} onChange={(e) => setNewPlant({ ...newPlant, companyId: e.target.value })} className={inputClass}>
                 <option value="" disabled>Select a company...</option>
-                {companies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
+                {clientCompanies.map(c => <option key={c.id} value={c.id}>{c.company_name}</option>)}
               </select>
             </div>
             <div>
@@ -81,10 +85,10 @@ export default function AddInfrastructure({
           <p className="text-sm font-medium text-slate-500">Remove a company or plant unit you no longer need. A company can only be removed once all its plants are removed, and a plant can only be removed once it has no employees or supervisors assigned to it.</p>
         </div>
 
-        {companies.length === 0 && <p className="text-sm text-slate-400 font-medium">No companies added yet.</p>}
+        {clientCompanies.length === 0 && <p className="text-sm text-slate-400 font-medium">No companies added yet.</p>}
 
         <div className="space-y-4">
-          {companies.map(company => (
+          {clientCompanies.map(company => (
             <div key={company.id} className="border border-slate-200 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between bg-slate-50 px-5 py-3">
                 <div className="flex items-center gap-2.5">

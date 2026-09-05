@@ -12,6 +12,8 @@ import ResourceTable from './components/ResourceTable';
 import CreateResource from './components/CreateResource';
 import AddInfrastructure from './components/AddInfrastructure';
 import EditResource from './components/EditResource';
+import PdfFormatSettings from './components/PdfFormatSettings';
+import ManageProfile from './components/ManageProfile';
 import { X, Key, User, Shield, CreditCard, LogOut, Camera, Trash2, Menu, Download } from 'lucide-react';
 
 export default function Dashboard({ role = 'admin', supervisorData = null, onLogout }) {
@@ -627,6 +629,51 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     setCompanies(companies.map(c => c.id === company.id ? { ...c, plants: c.plants.filter(p => p.id !== plant.id) } : c));
   };
 
+  // Creates the admin's own company profile if it doesn't exist yet (covers
+  // any admin who signed up before this feature existed), or updates it if
+  // it does. Either way, a "Head Office" plant is guaranteed to exist under
+  // it so Permanent hires always have somewhere valid to attach to.
+  const handleSaveOwnCompany = async (formData) => {
+    const existing = companies.find(c => c.is_own_company);
+
+    if (existing) {
+      const { data, error } = await supabase.from('companies').update({
+        company_name: formData.companyName,
+        gst_number: formData.gstNumber || null,
+        address: formData.address || null,
+        city: formData.city || null,
+        state: formData.state || null,
+        pincode: formData.pincode || null,
+      }).eq('id', existing.id).select().single();
+      if (error) throw error;
+      setCompanies(companies.map(c => c.id === existing.id ? { ...c, ...data } : c));
+    } else {
+      const { data: newCompany, error: companyError } = await supabase.from('companies').insert([{
+        workspace_id: workspaceId,
+        company_name: formData.companyName,
+        company_code: formData.companyName.replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || 'HQ',
+        gst_number: formData.gstNumber || null,
+        address: formData.address || null,
+        city: formData.city || null,
+        state: formData.state || null,
+        pincode: formData.pincode || null,
+        is_own_company: true,
+      }]).select().single();
+      if (companyError) throw companyError;
+
+      const { data: newPlant, error: plantError } = await supabase.from('plants').insert([{
+        company_id: newCompany.id,
+        workspace_id: workspaceId,
+        plant_name: 'Head Office',
+        location: formData.city || formData.address || '-',
+        plant_code: (newCompany.company_code || 'HQ') + 'HO',
+      }]).select().single();
+      if (plantError) throw plantError;
+
+      setCompanies([...companies, { ...newCompany, plants: [newPlant] }]);
+    }
+  };
+
   const handleAddCompany = async (e) => {
     e.preventDefault(); setLoading(true);
     const { data, error } = await supabase.from('companies').insert([{ 
@@ -832,6 +879,19 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
   const handleDownloadPDF = async (worker, type) => {
     const company = companies.find(c => c.id === worker.company_id);
     const plant = company?.plants?.find(p => p.id === worker.plant_id);
+    const ownCompany = companies.find(c => c.is_own_company);
+
+    // Per-company customization -- which fields/signatures to show. Falls
+    // back to "show everything" if this company hasn't been customized yet.
+    const { data: pdfSettings } = worker.company_id
+      ? await supabase.from('company_pdf_settings').select('included_fields, included_signatures').eq('company_id', worker.company_id).maybeSingle()
+      : { data: null };
+    const includedFields = pdfSettings?.included_fields || [
+      'fatherName', 'mobile', 'dob', 'gender', 'idProofType', 'aadharNumber',
+      'department', 'designation', 'joiningDate', 'experience', 'previousCompany', 'salary', 'operatorTrial',
+    ];
+    const includedSignatures = pdfSettings?.included_signatures || ['hr', 'plantHead', 'vp', 'ceo'];
+    const has = (key) => includedFields.includes(key);
 
     // Resolve signed URLs then convert to data URLs the PDF can embed.
     const [profilePhotoUrl, aadharFrontUrl, aadharBackUrl] = await Promise.all(
@@ -845,35 +905,45 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
     const margin = 15;
+    const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 
-    // --- Page 1: Details form ---
-    doc.setFontSize(16);
+    // --- Page 1: Header -- the agency's own identity, not the client's ---
+    doc.setFontSize(15);
     doc.setFont(undefined, 'bold');
-    doc.text('Employee / Worker Details Form', margin, 20);
-    doc.setFontSize(10);
-    doc.setFont(undefined, 'normal');
-    doc.text(`${company?.company_name || ''}${plant ? ' - ' + plant.plant_name : ''}`, margin, 27);
-    doc.setDrawColor(200);
-    doc.line(margin, 31, pageWidth - margin, 31);
+    doc.text(ownCompany?.company_name || 'Company Name Not Set', margin, 17);
 
-    // Passport-style photo, top-right corner (standard ~35mm x 45mm)
-    const photoW = 32, photoH = 40;
+    doc.setFontSize(8.5);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(90);
+    const addressLine = [ownCompany?.address, ownCompany?.city, ownCompany?.state, ownCompany?.pincode].filter(Boolean).join(', ');
+    if (addressLine) doc.text(addressLine, margin, 23);
+    if (ownCompany?.gst_number) doc.text(`GST: ${ownCompany.gst_number}`, margin, 28);
+    doc.setTextColor(0);
+
+    doc.setDrawColor(200);
+    doc.line(margin, 32, pageWidth - margin, 32);
+
+    doc.setFontSize(13);
+    doc.setFont(undefined, 'bold');
+    doc.text('EMPLOYEE JOINING FORM', pageWidth / 2, 39, { align: 'center' });
+    doc.setDrawColor(200);
+    doc.line(margin, 43, pageWidth - margin, 43);
+
+    // Passport-style photo, top-right corner
+    const photoW = 30, photoH = 38;
     const photoX = pageWidth - margin - photoW;
-    const photoY = 14;
+    const photoY = 8;
     if (profilePhotoUrl) {
       try { doc.addImage(profilePhotoUrl, 'JPEG', photoX, photoY, photoW, photoH); } catch { /* skip if format unsupported */ }
     }
     doc.setDrawColor(150);
     doc.rect(photoX, photoY, photoW, photoH);
 
-    const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
-
     autoTable(doc, {
-      startY: 38,
+      startY: 49,
       theme: 'grid',
       styles: { fontSize: 9, cellPadding: 2.2 },
       headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
-      margin: { right: margin + photoW + 4 },
       head: [['Placement', '']],
       body: [
         ['Company', company?.company_name || '-'],
@@ -881,22 +951,31 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       ],
     });
 
+    const basicDetailsBody = [['Full Name', worker.name || '-']];
+    if (has('fatherName')) basicDetailsBody.push(["Father's Name", worker.father_name || '-']);
+    if (has('mobile')) basicDetailsBody.push(['Mobile Number', worker.phone || '-']);
+    if (has('dob')) basicDetailsBody.push(['Date of Birth', formatDate(worker.dob)]);
+    if (has('gender')) basicDetailsBody.push(['Gender', worker.gender || '-']);
+    if (has('idProofType')) basicDetailsBody.push(['ID Proof Type', worker.id_proof_type || '-']);
+    if (has('aadharNumber')) basicDetailsBody.push(['Aadhaar / ID Number', worker.aadhar_number || '-']);
+
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 4,
       theme: 'grid',
       styles: { fontSize: 9, cellPadding: 2.2 },
       headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
       head: [['Basic Details', '']],
-      body: [
-        ['Full Name', worker.name || '-'],
-        ["Father's Name", worker.father_name || '-'],
-        ['Mobile Number', worker.phone || '-'],
-        ['Date of Birth', formatDate(worker.dob)],
-        ['Gender', worker.gender || '-'],
-        ['ID Proof Type', worker.id_proof_type || '-'],
-        ['Aadhaar / ID Number', worker.aadhar_number || '-'],
-      ],
+      body: basicDetailsBody,
     });
+
+    const employmentBody = [['Employment Type', type]];
+    if (has('department')) employmentBody.push(['Department', worker.department || '-']);
+    if (has('designation')) employmentBody.push(['Designation', worker.post || '-']);
+    if (has('joiningDate')) employmentBody.push(['Joining Date', formatDate(worker.joining_date)]);
+    if (has('experience')) employmentBody.push(['Experience', worker.experience || '-']);
+    if (has('previousCompany')) employmentBody.push(['Previous Company', worker.previous_company || '-']);
+    if (has('salary')) employmentBody.push(['Monthly Salary', worker.monthly_salary ? `Rs. ${worker.monthly_salary}` : '-']);
+    if (has('operatorTrial')) employmentBody.push(['Operator Trial Done', worker.operator_trial ? 'Yes' : 'No']);
 
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 4,
@@ -904,37 +983,63 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
       styles: { fontSize: 9, cellPadding: 2.2 },
       headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
       head: [['Employment Details', '']],
-      body: [
-        ['Employment Type', type],
-        ['Department', worker.department || '-'],
-        ['Designation', worker.post || '-'],
-        ['Joining Date', formatDate(worker.joining_date)],
-        ['Experience', worker.experience || '-'],
-        ['Previous Company', worker.previous_company || '-'],
-        ['Monthly Salary', worker.monthly_salary ? `Rs. ${worker.monthly_salary}` : '-'],
-      ],
+      body: employmentBody,
     });
+    // Statutory (ESI/UAN) and bank/account details are deliberately never
+    // shown on this form.
 
-    // Bank/account details are deliberately excluded from this form.
-    autoTable(doc, {
-      startY: doc.lastAutoTable.finalY + 4,
-      theme: 'grid',
-      styles: { fontSize: 9, cellPadding: 2.2 },
-      headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: 'bold' },
-      head: [['Statutory Details', '']],
-      body: [
-        ['ESI Number', worker.esi_number || '-'],
-        ['UAN / PF Number', worker.uan_number || '-'],
-      ],
-    });
+    let cursorY = doc.lastAutoTable.finalY + 10;
+
+    // Declaration -- printed blank for the worker/supervisor to mark by hand
+    doc.setFontSize(9.5);
+    doc.setFont(undefined, 'bold');
+    doc.text('Declaration', margin, cursorY);
+    cursorY += 7;
+
+    const drawYesNoRow = (label) => {
+      doc.setFont(undefined, 'normal');
+      doc.setFontSize(9);
+      doc.text(label, margin, cursorY);
+      doc.rect(margin + 78, cursorY - 3.5, 4, 4);
+      doc.text('Yes', margin + 84, cursorY);
+      doc.rect(margin + 98, cursorY - 3.5, 4, 4);
+      doc.text('No', margin + 104, cursorY);
+      cursorY += 8;
+    };
+    drawYesNoRow('Terms & Conditions Accepted:');
+    drawYesNoRow('Company Policy Accepted:');
+
+    cursorY += 10;
+    doc.setDrawColor(0);
+    doc.line(margin, cursorY, margin + 75, cursorY);
+    doc.setFontSize(8.5);
+    doc.text('Supervisor Signature', margin, cursorY + 4.5);
+
+    cursorY += 22;
+    const allSignatureBoxes = [
+      { key: 'hr', label: 'HR' },
+      { key: 'plantHead', label: 'Plant Head' },
+      { key: 'vp', label: 'VP' },
+      { key: 'ceo', label: 'CEO' },
+    ];
+    const activeSignatures = allSignatureBoxes.filter(s => includedSignatures.includes(s.key));
+    if (activeSignatures.length > 0) {
+      const boxWidth = (pageWidth - margin * 2) / activeSignatures.length;
+      activeSignatures.forEach((sig, i) => {
+        const x = margin + i * boxWidth;
+        doc.line(x + 6, cursorY, x + boxWidth - 6, cursorY);
+        doc.setFontSize(8.5);
+        doc.text(sig.label, x + boxWidth / 2, cursorY + 4.5, { align: 'center' });
+      });
+    }
 
     doc.setFontSize(8);
     doc.setTextColor(150);
-    doc.text(`Generated on ${new Date().toLocaleDateString('en-GB')} via OptiStaff`, margin, doc.internal.pageSize.getHeight() - 10);
+    doc.text(`Generated on ${new Date().toLocaleDateString('en-GB')} via OptiStaff`, margin, doc.internal.pageSize.getHeight() - 8);
+    doc.setTextColor(0);
 
     // --- Page 2: Aadhaar front and back ---
     doc.addPage();
-    doc.setTextColor(0);
     doc.setFontSize(14);
     doc.setFont(undefined, 'bold');
     doc.text('Aadhaar Card', margin, 20);
@@ -1087,7 +1192,7 @@ export default function Dashboard({ role = 'admin', supervisorData = null, onLog
 return (
     <div className="flex h-screen bg-slate-50 font-sans text-slate-800 overflow-hidden">
       
-      <Sidebar role={role} activeTab={activeTab} setActiveTab={setActiveTab} isMobileOpen={isSidebarMobileOpen} setIsMobileOpen={setIsSidebarMobileOpen} />
+      <Sidebar role={role} activeTab={activeTab} setActiveTab={setActiveTab} isMobileOpen={isSidebarMobileOpen} setIsMobileOpen={setIsSidebarMobileOpen} ownCompanyName={companies.find(c => c.is_own_company)?.company_name} />
       
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative w-full">
         <div className="px-5 md:px-10 py-4 md:py-6 flex justify-between items-center border-b border-slate-200 bg-white shrink-0 shadow-sm z-10">
@@ -1169,6 +1274,14 @@ return (
                 )
               })}
             </div>
+          )}
+
+          {activeTab === 'pdfFormat' && role === 'admin' && (
+            <PdfFormatSettings companies={companies} />
+          )}
+
+          {activeTab === 'manageProfile' && role === 'admin' && (
+            <ManageProfile companies={companies} onSave={handleSaveOwnCompany} />
           )}
         </div>
 
